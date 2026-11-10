@@ -10,10 +10,11 @@ Ejecutar con:
 
 import hmac
 import html
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
+import requests
 import streamlit as st
 
 # =============================================================================
@@ -179,6 +180,13 @@ CUSTOM_CSS = f"""
     .napo-card-delta {{
         font-size: 13px;
         font-weight: 600;
+        margin-top: 4px;
+        font-family: 'JetBrains Mono', monospace;
+    }}
+
+    .napo-card-sub {{
+        font-size: 12px;
+        color: {TEXT_SECONDARY};
         margin-top: 4px;
         font-family: 'JetBrains Mono', monospace;
     }}
@@ -499,20 +507,17 @@ def generar_rendimientos_diarios() -> pd.DataFrame:
     return pd.DataFrame(data).sort_values("Variación (%)", ascending=False)
 
 
-def kpi_card(label: str, value: str, delta: str = None, positive: bool = True):
-    delta_html = ""
+def kpi_card(label: str, value: str, delta: str = None, positive: bool = True, sub: str = None):
+    extra = ""
     if delta:
         color = YOSHI_GREEN if positive else YOSHI_ORANGE
         arrow = "▲" if positive else "▼"
-        delta_html = f'<div class="napo-card-delta" style="color:{color};">{arrow} {delta}</div>'
+        extra += f'<div class="napo-card-delta" style="color:{color};">{arrow} {delta}</div>'
+    if sub:
+        extra += f'<div class="napo-card-sub">{html.escape(sub)}</div>'
     st.markdown(
-        f"""
-        <div class="napo-card">
-            <div class="napo-card-label">{label}</div>
-            <div class="napo-card-value">{value}</div>
-            {delta_html}
-        </div>
-        """,
+        f'<div class="napo-card"><div class="napo-card-label">{label}</div>'
+        f'<div class="napo-card-value">{value}</div>{extra}</div>',
         unsafe_allow_html=True,
     )
 
@@ -525,22 +530,87 @@ def section_title(text: str, icon: str = ""):
 
 
 # =============================================================================
-# MARQUESINA GLOBAL DE MERCADO
+# DATOS REALES: DÓLARES (DolarApi) Y RIESGO PAÍS (ArgentinaDatos)
 # =============================================================================
 
-marquee_items = [
-    ("WTI", "US$ 68,42", "+0,8%", True),
-    ("Oro", "US$ 2.615", "+0,3%", True),
-    ("S&P 500", "5.812", "-0,4%", False),
-    ("Merval", "2.969.546", "-0,94%", False),
-    ("Riesgo País", "642 pb", "-1,2%", True),
-    ("Dólar CCL", "$ 1.604,58", "+0,2%", False),
-    ("Dólar MEP", "$ 1.588,10", "+0,1%", False),
+DOLARAPI_URL = "https://dolarapi.com/v1/dolares"
+RIESGO_PAIS_URL = "https://api.argentinadatos.com/v1/finanzas/indices/riesgo-pais/ultimo"
+HTTP_TIMEOUT = 6  # segundos máximos de espera por cada fuente
+TZ_ARG = timezone(timedelta(hours=-3))  # Argentina no usa horario de verano
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def obtener_dolares():
+    """Devuelve {casa: cotización} desde DolarApi, o None si la fuente falla."""
+    try:
+        resp = requests.get(DOLARAPI_URL, timeout=HTTP_TIMEOUT)
+        resp.raise_for_status()
+        return {item["casa"]: item for item in resp.json()}
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def obtener_riesgo_pais():
+    """Devuelve {valor, fecha} del último riesgo país, o None si la fuente falla."""
+    try:
+        resp = requests.get(RIESGO_PAIS_URL, timeout=HTTP_TIMEOUT)
+        resp.raise_for_status()
+        dato = resp.json()
+        return {"valor": float(dato["valor"]), "fecha": str(dato["fecha"])}
+    except Exception:
+        return None
+
+
+def fmt_pesos(valor) -> str:
+    """1515.97 -> '$ 1.515,97' (formato argentino)."""
+    texto = f"{float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"$ {texto}"
+
+
+def parse_iso(texto):
+    """Convierte un texto ISO 8601 a datetime en hora argentina (o None)."""
+    try:
+        return datetime.fromisoformat(str(texto).replace("Z", "+00:00")).astimezone(TZ_ARG)
+    except Exception:
+        return None
+
+
+def fmt_fecha_corta(texto) -> str:
+    """'2026-11-10' -> '10/11/2026'."""
+    try:
+        return datetime.strptime(str(texto)[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+    except Exception:
+        return str(texto)
+
+
+DOLARES_PANEL = [
+    ("Dólar Oficial", "oficial"),
+    ("Dólar MEP", "bolsa"),
+    ("Dólar CCL", "contadoconliqui"),
+    ("Dólar Blue", "blue"),
 ]
+
+dolares = obtener_dolares()
+riesgo_pais = obtener_riesgo_pais()
+
+# =============================================================================
+# MARQUESINA GLOBAL DE MERCADO (solo con datos reales)
+# =============================================================================
+
+marquee_items = []
+for etiqueta, casa in DOLARES_PANEL:
+    cot = (dolares or {}).get(casa)
+    if cot and cot.get("venta") is not None:
+        marquee_items.append((etiqueta, fmt_pesos(cot["venta"])))
+if riesgo_pais:
+    marquee_items.append(("Riesgo País", f"{int(round(riesgo_pais['valor']))} pb"))
+if not marquee_items:
+    marquee_items = [("NAPO", "Panel Táctico Financiero")]
+
 ticker_html = "".join(
-    f'<span class="napo-ticker-item"><b>{name}</b>{val} '
-    f'<span class="{"napo-up" if up else "napo-down"}">{chg}</span></span>'
-    for name, val, chg, up in (marquee_items * 2)
+    f'<span class="napo-ticker-item"><b>{name}</b>{val}</span>'
+    for name, val in (marquee_items * 4)
 )
 st.markdown(
     f'<div class="napo-ticker-wrap"><div class="napo-ticker-inner">{ticker_html}</div></div>',
@@ -565,7 +635,7 @@ st.markdown(
 )
 
 st.markdown(
-    '<div class="napo-demo-banner">🧪 VERSIÓN DEMO · Precios, cotizaciones y novedades simulados. '
+    '<div class="napo-demo-banner">🧪 VERSIÓN DEMO · Dólares y riesgo país con datos reales; el resto del contenido es simulado. '
     'No constituye asesoramiento financiero.</div>',
     unsafe_allow_html=True,
 )
@@ -575,15 +645,33 @@ st.markdown(
 # =============================================================================
 
 section_title("Panel Cambiario", "💵")
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    kpi_card("Dólar Oficial", "$ 1.515,97", "0,12%", True)
-with col2:
-    kpi_card("Dólar MEP", "$ 1.588,10", "0,45%", False)
-with col3:
-    kpi_card("Dólar CCL", "$ 1.604,58", "0,22%", False)
-with col4:
-    kpi_card("Riesgo País", "642 pb", "1,20%", True)
+
+if dolares is None and riesgo_pais is None:
+    st.warning("No pudimos traer las cotizaciones en este momento. Probá recargar la página en unos minutos.")
+
+cols_cambio = st.columns(5)
+for col, (etiqueta, casa) in zip(cols_cambio[:4], DOLARES_PANEL):
+    with col:
+        cot = (dolares or {}).get(casa)
+        if cot and cot.get("venta") is not None:
+            sub = f"Compra {fmt_pesos(cot['compra'])}" if cot.get("compra") is not None else None
+            kpi_card(etiqueta, fmt_pesos(cot["venta"]), sub=sub)
+        else:
+            kpi_card(etiqueta, "—", sub="Sin datos por ahora")
+with cols_cambio[4]:
+    if riesgo_pais:
+        kpi_card("Riesgo País", f"{int(round(riesgo_pais['valor']))} pb",
+                 sub=f"Dato del {fmt_fecha_corta(riesgo_pais['fecha'])}")
+    else:
+        kpi_card("Riesgo País", "—", sub="Sin datos por ahora")
+
+horas = [parse_iso(c.get("fechaActualizacion")) for c in (dolares or {}).values()]
+horas = [h for h in horas if h is not None]
+actualizado = max(horas).strftime("%d/%m %H:%M") if horas else "s/d"
+st.caption(
+    f"Cotizaciones de venta · Fuentes: DolarApi y ArgentinaDatos · "
+    f"Última actualización de dólares: {actualizado} (hora Argentina)"
+)
 
 # =============================================================================
 # SIDEBAR — "LA COCINA" (Back-office del operador)
@@ -633,7 +721,7 @@ with st.sidebar:
         st.divider()
         st.markdown("**Estado del sistema**")
         st.caption(f"Última sincronización: {datetime.now().strftime('%d/%m/%Y %H:%M')} hs")
-        st.caption("Fuente de datos: simulada (demo) — reemplazar por API real")
+        st.caption("Fuentes: DolarApi y ArgentinaDatos (cambiario) · resto simulado")
 
         if st.button("Cerrar sesión de La Cocina"):
             st.session_state["cocina_ok"] = False
@@ -894,7 +982,7 @@ st.markdown(
     """
     <div class="napo-footer">
         NAPO | Panel Táctico Financiero — Menos ruido, datos duros y decisiones tácticas.<br>
-        Los datos mostrados son simulados a fines demostrativos. No constituye asesoramiento financiero.
+        Dólares y riesgo país: datos de DolarApi y ArgentinaDatos. El resto del contenido es simulado a fines demostrativos. No constituye asesoramiento financiero.
     </div>
     """,
     unsafe_allow_html=True,
