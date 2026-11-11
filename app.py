@@ -10,12 +10,14 @@ Ejecutar con:
 
 import hmac
 import html
+import time
 from datetime import datetime, timedelta, timezone
 
-import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import requests
 import streamlit as st
+import yfinance as yf
 
 # =============================================================================
 # CONFIGURACIÓN GENERAL DE LA PÁGINA
@@ -319,6 +321,16 @@ CUSTOM_CSS = f"""
         font-weight: 700;
     }}
 
+    .napo-badge-neutral {{
+        background: rgba(37, 99, 235, 0.12);
+        color: {KLEIN_BLUE_LIGHT};
+        border: 1px solid rgba(37, 99, 235, 0.35);
+        padding: 3px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+    }}
+
     /* ===================== TABS ===================== */
     .stTabs [data-baseweb="tab-list"] {{
         gap: 4px;
@@ -446,19 +458,30 @@ CUSTOM_CSS = f"""
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 # =============================================================================
-# DATOS SIMULADOS (reemplazar por fuente real / API cuando esté disponible)
+# ACTIVOS Y DATOS DE MERCADO
 # =============================================================================
 
+# "yahoo" es el símbolo con el que Yahoo Finance publica cada papel en ByMA (.BA).
 ACTIVOS = {
-    "YPF": {"nombre": "YPF S.A.", "sector": "Energía", "mkt_cap": "US$ 20.400 M", "prox_balance": "05-Nov-2026"},
-    "PAMP": {"nombre": "Pampa Energía", "sector": "Energía", "mkt_cap": "US$ 8.900 M", "prox_balance": "12-Nov-2026"},
-    "GGAL": {"nombre": "Grupo Financiero Galicia", "sector": "Bancos", "mkt_cap": "US$ 7.100 M", "prox_balance": "20-Oct-2026"},
-    "TXAR": {"nombre": "Ternium Argentina", "sector": "Siderurgia", "mkt_cap": "US$ 2.300 M", "prox_balance": "28-Oct-2026"},
-    "ALUA": {"nombre": "Aluar Aluminio Argentino", "sector": "Industria", "mkt_cap": "US$ 2.900 M", "prox_balance": "15-Nov-2026"},
-    "BMA": {"nombre": "Banco Macro", "sector": "Bancos", "mkt_cap": "US$ 4.600 M", "prox_balance": "22-Oct-2026"},
-    "CEPU": {"nombre": "Central Puerto", "sector": "Energía", "mkt_cap": "US$ 3.100 M", "prox_balance": "10-Nov-2026"},
-    "MELI": {"nombre": "MercadoLibre", "sector": "Tecnología", "mkt_cap": "US$ 90.500 M", "prox_balance": "05-Nov-2026"},
+    "YPF": {"nombre": "YPF S.A.", "sector": "Energía", "yahoo": "YPFD.BA"},
+    "PAMP": {"nombre": "Pampa Energía", "sector": "Energía", "yahoo": "PAMP.BA"},
+    "GGAL": {"nombre": "Grupo Financiero Galicia", "sector": "Bancos", "yahoo": "GGAL.BA"},
+    "TXAR": {"nombre": "Ternium Argentina", "sector": "Siderurgia", "yahoo": "TXAR.BA"},
+    "ALUA": {"nombre": "Aluar Aluminio Argentino", "sector": "Industria", "yahoo": "ALUA.BA"},
+    "BMA": {"nombre": "Banco Macro", "sector": "Bancos", "yahoo": "BMA.BA"},
+    "CEPU": {"nombre": "Central Puerto", "sector": "Energía", "yahoo": "CEPU.BA"},
+    "MELI": {"nombre": "MercadoLibre (CEDEAR)", "sector": "Tecnología", "yahoo": "MELI.BA"},
 }
+
+# Índices y commodities de la marquesina: (nombre, símbolo Yahoo, prefijo, decimales)
+INDICES_MARQUESINA = [
+    ("Merval", "^MERV", "", 0),
+    ("S&P 500", "^GSPC", "", 0),
+    ("WTI", "CL=F", "US$ ", 2),
+    ("Oro", "GC=F", "US$ ", 0),
+]
+
+SIMBOLOS_TODOS = [a["yahoo"] for a in ACTIVOS.values()] + [i[1] for i in INDICES_MARQUESINA]
 
 IR_LINKS = {
     "YPF": "https://inversores.ypf.com",
@@ -483,28 +506,168 @@ NOTICIAS_TACTICAS = {
 }
 
 
-@st.cache_data(ttl=300)
-def generar_serie_precios(ticker: str, dias: int = 90) -> pd.DataFrame:
-    """Genera una serie de precios simulada (random walk) para graficar."""
-    seed = sum(ord(c) for c in ticker)
-    rng = np.random.default_rng(seed)
-    fechas = [datetime.today() - timedelta(days=i) for i in range(dias)][::-1]
-    precio_inicial = 100 + (seed % 50)
-    retornos = rng.normal(loc=0.0015, scale=0.022, size=dias)
-    precios = precio_inicial * np.cumprod(1 + retornos)
-    return pd.DataFrame({"Fecha": fechas, "Precio": precios}).set_index("Fecha")
+@st.cache_data(ttl=600, show_spinner="Trayendo precios del mercado…")
+def _descargar_precios():
+    """Una sola descarga (1 año, diario) con todos los símbolos. Lanza error si falla."""
+    datos = yf.download(
+        SIMBOLOS_TODOS,
+        period="1y",
+        interval="1d",
+        group_by="ticker",
+        auto_adjust=True,
+        progress=False,
+        threads=True,
+    )
+    if datos is None or datos.empty:
+        raise ValueError("Yahoo Finance no devolvió datos")
+    return datos
 
 
-@st.cache_data(ttl=300)
-def generar_rendimientos_diarios() -> pd.DataFrame:
-    """Genera rendimientos diarios simulados para el heatmap y ranking."""
-    seed = datetime.today().day
-    rng = np.random.default_rng(seed)
-    data = []
-    for tk in ACTIVOS:
-        var = round(rng.normal(loc=0.3, scale=3.2), 2)
-        data.append({"Ticker": tk, "Variación (%)": var})
-    return pd.DataFrame(data).sort_values("Variación (%)", ascending=False)
+def cargar_precios():
+    """Devuelve la tabla de precios o None. Si falla, no reintenta durante 60 segundos."""
+    ahora = time.time()
+    if ahora - st.session_state.get("precios_fallo_ts", 0) < 60:
+        return None
+    try:
+        return _descargar_precios()
+    except Exception:
+        st.session_state["precios_fallo_ts"] = ahora
+        return None
+
+
+def serie_activo(datos, simbolo) -> pd.DataFrame:
+    """Extrae Open/High/Low/Close/Volume de un símbolo (vacío si no hay datos)."""
+    if datos is None:
+        return pd.DataFrame()
+    try:
+        df = datos[simbolo][["Open", "High", "Low", "Close", "Volume"]].copy()
+    except Exception:
+        return pd.DataFrame()
+    df = df.dropna(subset=["Close"])
+    if getattr(df.index, "tz", None) is not None:
+        df.index = df.index.tz_localize(None)
+    return df
+
+
+def resumen_serie(df):
+    """Último precio, variación diaria, volumen, amplitud del día y rango del año."""
+    if df is None or len(df) < 2:
+        return None
+    ultimo = float(df["Close"].iloc[-1])
+    previo = float(df["Close"].iloc[-2])
+    fila = df.iloc[-1]
+    var = (ultimo / previo - 1) * 100 if previo else 0.0
+    amplitud = 0.0
+    if ultimo and pd.notna(fila["High"]) and pd.notna(fila["Low"]):
+        amplitud = (float(fila["High"]) - float(fila["Low"])) / ultimo * 100
+    return {
+        "ultimo": ultimo,
+        "var": var,
+        "volumen": float(fila["Volume"]) if pd.notna(fila["Volume"]) else 0.0,
+        "amplitud": amplitud,
+        "fecha": df.index[-1],
+        "min_1a": float(df["Close"].min()),
+        "max_1a": float(df["Close"].max()),
+    }
+
+
+def fmt_numero(valor, decimales: int = 2) -> str:
+    """1234567.891 -> '1.234.567,89' (formato argentino)."""
+    texto = f"{float(valor):,.{decimales}f}"
+    return texto.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def fmt_pct(valor) -> str:
+    """-1.256 -> '1,26%' (sin signo; el signo lo marca la flecha)."""
+    return f"{abs(float(valor)):.2f}".replace(".", ",") + "%"
+
+
+def fmt_var(valor) -> str:
+    """1.256 -> '+1,26%' (con signo, coma decimal)."""
+    return f"{float(valor):+.2f}".replace(".", ",") + "%"
+
+
+RANGOS = {"1M": 31, "3M": 92, "6M": 183, "1A": 366}
+
+
+def recortar_rango(df: pd.DataFrame, rango: str) -> pd.DataFrame:
+    corte = df.index.max() - pd.Timedelta(days=RANGOS[rango])
+    return df[df.index >= corte]
+
+
+def grafico_precio(df: pd.DataFrame, tipo: str):
+    """Gráfico interactivo (línea o velas) con los colores de la marca."""
+    fig = go.Figure()
+    if tipo == "Velas":
+        fig.add_trace(
+            go.Candlestick(
+                x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
+                increasing_line_color=YOSHI_GREEN, decreasing_line_color=YOSHI_ORANGE,
+                name="Precio",
+            )
+        )
+        minimo, maximo = float(df["Low"].min()), float(df["High"].max())
+    else:
+        fig.add_trace(
+            go.Scatter(
+                x=df.index, y=df["Close"], mode="lines", name="Cierre",
+                line=dict(color=KLEIN_BLUE_LIGHT, width=2.2),
+                fill="tozeroy", fillcolor="rgba(37, 99, 235, 0.12)",
+                hovertemplate="%{y:,.2f}<extra></extra>",
+            )
+        )
+        minimo, maximo = float(df["Close"].min()), float(df["Close"].max())
+    margen = (maximo - minimo) * 0.08 or maximo * 0.02
+    fig.update_layout(
+        height=380,
+        margin=dict(l=10, r=10, t=10, b=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color=TEXT_SECONDARY, size=12),
+        hovermode="x unified",
+        showlegend=False,
+        separators=",.",
+        hoverlabel=dict(bgcolor=BG_CARD_ALT, bordercolor=BORDER_SUBTLE, font=dict(color=TEXT_PRIMARY)),
+        xaxis=dict(showgrid=False, rangeslider=dict(visible=False), linecolor=BORDER_SUBTLE),
+        yaxis=dict(
+            gridcolor=BORDER_SUBTLE, zeroline=False, side="right", tickformat=",.2f",
+            range=[minimo - margen, maximo + margen],
+        ),
+    )
+    fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+    return fig
+
+
+def grafico_heatmap(df: pd.DataFrame):
+    """Mapa de calor: verde sube, naranja baja. Todas las celdas del mismo tamaño."""
+    tope = max(3.0, float(df["Variación (%)"].abs().max()))
+    fig = go.Figure(
+        go.Treemap(
+            labels=df["Ticker"],
+            parents=[""] * len(df),
+            values=[1] * len(df),
+            customdata=df["Variación (%)"],
+            texttemplate="<b>%{label}</b><br>%{customdata:+.2f}%",
+            hovertemplate="<b>%{label}</b><br>%{customdata:+.2f}%<extra></extra>",
+            textfont=dict(size=18, color=TEXT_PRIMARY),
+            tiling=dict(pad=2),
+            marker=dict(
+                colors=df["Variación (%)"],
+                colorscale=[[0, YOSHI_ORANGE], [0.5, BG_CARD_ALT], [1, YOSHI_GREEN]],
+                cmin=-tope, cmax=tope, cmid=0,
+                line=dict(width=3, color=BG_DARK),
+                showscale=False,
+            ),
+        )
+    )
+    fig.update_layout(
+        height=340,
+        margin=dict(l=0, r=0, t=0, b=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        separators=",.",
+    )
+    return fig
 
 
 def kpi_card(label: str, value: str, delta: str = None, positive: bool = True, sub: str = None):
@@ -593,25 +756,39 @@ DOLARES_PANEL = [
 
 dolares = obtener_dolares()
 riesgo_pais = obtener_riesgo_pais()
+precios = cargar_precios()
 
 # =============================================================================
 # MARQUESINA GLOBAL DE MERCADO (solo con datos reales)
 # =============================================================================
 
-marquee_items = []
+marquee_items = []  # (nombre, valor, variación en texto o None, sube True/False/None)
 for etiqueta, casa in DOLARES_PANEL:
     cot = (dolares or {}).get(casa)
     if cot and cot.get("venta") is not None:
-        marquee_items.append((etiqueta, fmt_pesos(cot["venta"])))
+        marquee_items.append((etiqueta, fmt_pesos(cot["venta"]), None, None))
 if riesgo_pais:
-    marquee_items.append(("Riesgo País", f"{int(round(riesgo_pais['valor']))} pb"))
+    marquee_items.append(("Riesgo País", f"{int(round(riesgo_pais['valor']))} pb", None, None))
+for nombre, simbolo, prefijo, decimales in INDICES_MARQUESINA:
+    r = resumen_serie(serie_activo(precios, simbolo))
+    if r:
+        marquee_items.append(
+            (nombre, f"{prefijo}{fmt_numero(r['ultimo'], decimales)}", fmt_pct(r["var"]), r["var"] >= 0)
+        )
 if not marquee_items:
-    marquee_items = [("NAPO", "Panel Táctico Financiero")]
+    marquee_items = [("NAPO", "Panel Táctico Financiero", None, None)]
 
-ticker_html = "".join(
-    f'<span class="napo-ticker-item"><b>{name}</b>{val}</span>'
-    for name, val in (marquee_items * 4)
-)
+
+def _item_marquesina(nombre, valor, chg, sube):
+    cambio = ""
+    if chg is not None:
+        clase = "napo-up" if sube else "napo-down"
+        flecha = "▲" if sube else "▼"
+        cambio = f' <span class="{clase}">{flecha} {chg}</span>'
+    return f'<span class="napo-ticker-item"><b>{nombre}</b>{valor}{cambio}</span>'
+
+
+ticker_html = "".join(_item_marquesina(*item) for item in (marquee_items * 4))
 st.markdown(
     f'<div class="napo-ticker-wrap"><div class="napo-ticker-inner">{ticker_html}</div></div>',
     unsafe_allow_html=True,
@@ -635,7 +812,8 @@ st.markdown(
 )
 
 st.markdown(
-    '<div class="napo-demo-banner">🧪 VERSIÓN DEMO · Dólares y riesgo país con datos reales; el resto del contenido es simulado. '
+    '<div class="napo-demo-banner">🧪 VERSIÓN DEMO · Dólares, riesgo país y precios con datos reales (pueden tener demora); '
+    'novedades, audios y comunidad son de ejemplo. '
     'No constituye asesoramiento financiero.</div>',
     unsafe_allow_html=True,
 )
@@ -721,7 +899,7 @@ with st.sidebar:
         st.divider()
         st.markdown("**Estado del sistema**")
         st.caption(f"Última sincronización: {datetime.now().strftime('%d/%m/%Y %H:%M')} hs")
-        st.caption("Fuentes: DolarApi y ArgentinaDatos (cambiario) · resto simulado")
+        st.caption("Fuentes: DolarApi, ArgentinaDatos y Yahoo Finance · novedades/audio de ejemplo")
 
         if st.button("Cerrar sesión de La Cocina"):
             st.session_state["cocina_ok"] = False
@@ -747,9 +925,10 @@ with tab1:
 
     info = ACTIVOS[ticker_sel]
     ir_link = IR_LINKS[ticker_sel]
+    df_activo = serie_activo(precios, info["yahoo"])
+    resumen = resumen_serie(df_activo)
 
     with st.container(border=True):
-
         top_a, top_b = st.columns([3, 1])
         with top_a:
             st.markdown(f"### {ticker_sel} · {info['nombre']}")
@@ -757,27 +936,45 @@ with tab1:
         with top_b:
             st.markdown(
                 f'<div style="text-align:right; padding-top:6px;">'
-                f'<a class="napo-ir-link" href="{ir_link}" target="_blank" rel="noopener noreferrer">Relaciones con Inversores ↗</a>'
-                f"</div>",
+                f'<a class="napo-ir-link" href="{ir_link}" target="_blank" rel="noopener noreferrer">'
+                f"Relaciones con Inversores ↗</a></div>",
                 unsafe_allow_html=True,
             )
 
-        m1, m2, m3 = st.columns(3)
-        with m1:
-            kpi_card("Cap. de Mercado", info["mkt_cap"])
-        with m2:
-            serie = generar_serie_precios(ticker_sel)
-            vol_simulado = f"{int(abs(np.random.default_rng(len(ticker_sel)).normal(1_200_000, 300_000))):,}".replace(",", ".")
-            kpi_card("Volumen (aprox.)", vol_simulado)
-        with m3:
-            kpi_card("Próximo Balance", info["prox_balance"])
+        if resumen is None:
+            st.info("No pudimos traer los precios de este activo ahora. Probá recargar en unos minutos.")
+        else:
+            m1, m2, m3, m4 = st.columns(4)
+            with m1:
+                kpi_card("Último precio (ARS)", fmt_pesos(resumen["ultimo"]))
+            with m2:
+                kpi_card("Variación diaria", fmt_pct(resumen["var"]),
+                         delta="vs. cierre anterior", positive=resumen["var"] >= 0)
+            with m3:
+                kpi_card("Volumen", fmt_numero(resumen["volumen"], 0), sub="último día operado")
+            with m4:
+                kpi_card("Rango 1 año", f"{fmt_numero(resumen['min_1a'], 0)}–{fmt_numero(resumen['max_1a'], 0)}",
+                         sub="mín–máx de cierres")
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            ctrl1, ctrl2 = st.columns([1, 1])
+            with ctrl1:
+                rango = st.radio("Rango", list(RANGOS.keys()), index=1, horizontal=True, key="rango_grafico")
+            with ctrl2:
+                tipo = st.radio("Tipo de gráfico", ["Línea", "Velas"], horizontal=True, key="tipo_grafico")
+
+            df_rec = recortar_rango(df_activo, rango)
+            try:
+                st.plotly_chart(grafico_precio(df_rec, tipo), config={"displayModeBar": False})
+            except Exception:
+                st.line_chart(df_rec["Close"], color=KLEIN_BLUE, height=320)
+            st.caption(
+                f"Fuente: Yahoo Finance (puede tener demora) · Último dato: "
+                f"{resumen['fecha'].strftime('%d/%m/%Y')}"
+            )
 
         st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("**Evolución de precio (90 días)**")
-        st.line_chart(serie, color=KLEIN_BLUE, height=320)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("**🎯 Resumen táctico**")
+        st.markdown("**🎯 Resumen táctico (ejemplo)**")
         st.info(NOTICIAS_TACTICAS.get(ticker_sel, "Sin novedades tácticas registradas."))
 
         # Reproductor de audio vintage integrado
@@ -802,7 +999,7 @@ with tab1:
             "https://actions.google.com/sounds/v1/ambiences/coffee_shop.ogg",
             format="audio/ogg",
         )
-        st.caption("Audio demo — reemplazar por el resumen de voz real del activo seleccionado.")
+        st.caption("Audio de ejemplo — reemplazar por el resumen de voz real del activo seleccionado.")
 
 
 # -----------------------------------------------------------------------------
@@ -811,67 +1008,69 @@ with tab1:
 with tab2:
     section_title("Heatmap de Rendimiento Diario", "🔥")
 
-    df_rend = generar_rendimientos_diarios()
+    filas = []
+    for tk, datos_tk in ACTIVOS.items():
+        r = resumen_serie(serie_activo(precios, datos_tk["yahoo"]))
+        if r:
+            filas.append({
+                "Ticker": tk,
+                "Último": round(r["ultimo"], 2),
+                "Variación (%)": round(r["var"], 2),
+                "Volumen": int(r["volumen"]),
+                "Amplitud (%)": round(r["amplitud"], 2),
+            })
+    df_rend = pd.DataFrame(filas)
 
-    cols = st.columns(len(df_rend))
-    for c, (_, row) in zip(cols, df_rend.iterrows()):
-        var = row["Variación (%)"]
-        intensidad = min(abs(var) / 4, 1)
-        if var >= 0:
-            bg = f"rgba(34, 197, 94, {0.12 + 0.35 * intensidad})"
-            txt_color = YOSHI_GREEN
-        else:
-            bg = f"rgba(249, 115, 22, {0.12 + 0.35 * intensidad})"
-            txt_color = YOSHI_ORANGE
-        with c:
-            st.markdown(
-                f"""
-                <div class="napo-heat-cell" style="background:{bg};">
-                    <div class="napo-heat-ticker" style="color:{TEXT_PRIMARY};">{row['Ticker']}</div>
-                    <div class="napo-heat-value" style="color:{txt_color};">{var:+.2f}%</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+    if df_rend.empty:
+        st.info("No pudimos traer los precios del mercado ahora. Probá recargar en unos minutos.")
+    else:
+        df_rend = df_rend.sort_values("Variación (%)", ascending=False).reset_index(drop=True)
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    rank_col1, rank_col2, rank_col3 = st.columns(3)
+        try:
+            st.plotly_chart(grafico_heatmap(df_rend), config={"displayModeBar": False})
+        except Exception:
+            st.dataframe(df_rend.set_index("Ticker"))
+        st.caption("Variación diaria vs. cierre anterior · Celdas del mismo tamaño (no representan capitalización) · "
+                   "Fuente: Yahoo Finance, con posible demora.")
 
-    with rank_col1:
-        section_title("Top Ganadores", "🟢")
-        for _, row in df_rend.head(3).iterrows():
-            st.markdown(
-                f'<div class="napo-card" style="margin-bottom:8px;">'
-                f'<b>{row["Ticker"]}</b> '
-                f'<span class="napo-badge-up">+{row["Variación (%)"]:.2f}%</span></div>',
-                unsafe_allow_html=True,
-            )
+        rank_col1, rank_col2, rank_col3 = st.columns(3)
 
-    with rank_col2:
-        section_title("Top Perdedores", "🔴")
-        for _, row in df_rend.tail(3).iterrows():
-            st.markdown(
-                f'<div class="napo-card" style="margin-bottom:8px;">'
-                f'<b>{row["Ticker"]}</b> '
-                f'<span class="napo-badge-down">{row["Variación (%)"]:.2f}%</span></div>',
-                unsafe_allow_html=True,
-            )
+        with rank_col1:
+            section_title("Top Ganadores", "🟢")
+            for _, row in df_rend.head(3).iterrows():
+                clase = "napo-badge-up" if row["Variación (%)"] >= 0 else "napo-badge-down"
+                st.markdown(
+                    f'<div class="napo-card" style="margin-bottom:8px;">'
+                    f'<b>{row["Ticker"]}</b> '
+                    f'<span class="{clase}">{fmt_var(row["Variación (%)"])}</span></div>',
+                    unsafe_allow_html=True,
+                )
 
-    with rank_col3:
-        section_title("Oportunidades Swing", "⚡")
-        swing = df_rend.iloc[(df_rend["Variación (%)"].abs() - 1.5).abs().argsort()[:3]]
-        for _, row in swing.iterrows():
-            badge = "napo-badge-up" if row["Variación (%)"] >= 0 else "napo-badge-down"
-            st.markdown(
-                f'<div class="napo-card" style="margin-bottom:8px;">'
-                f'<b>{row["Ticker"]}</b> '
-                f'<span class="{badge}">{row["Variación (%)"]:+.2f}%</span></div>',
-                unsafe_allow_html=True,
-            )
+        with rank_col2:
+            section_title("Top Perdedores", "🔴")
+            for _, row in df_rend.sort_values("Variación (%)").head(3).iterrows():
+                clase = "napo-badge-up" if row["Variación (%)"] >= 0 else "napo-badge-down"
+                st.markdown(
+                    f'<div class="napo-card" style="margin-bottom:8px;">'
+                    f'<b>{row["Ticker"]}</b> '
+                    f'<span class="{clase}">{fmt_var(row["Variación (%)"])}</span></div>',
+                    unsafe_allow_html=True,
+                )
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("**Tabla completa**")
-    st.dataframe(df_rend.set_index("Ticker"))
+        with rank_col3:
+            section_title("Mayor Amplitud del Día", "⚡")
+            for _, row in df_rend.sort_values("Amplitud (%)", ascending=False).head(3).iterrows():
+                st.markdown(
+                    f'<div class="napo-card" style="margin-bottom:8px;">'
+                    f'<b>{row["Ticker"]}</b> '
+                    f'<span class="napo-badge-neutral">rango {fmt_pct(row["Amplitud (%)"])}</span></div>',
+                    unsafe_allow_html=True,
+                )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("**Tabla completa**")
+        st.dataframe(df_rend[["Ticker", "Último", "Variación (%)", "Volumen"]].set_index("Ticker"))
+
 
 # -----------------------------------------------------------------------------
 # TAB 3 — AUDIO-RESÚMENES (MODO CASSETTE)
@@ -982,7 +1181,7 @@ st.markdown(
     """
     <div class="napo-footer">
         NAPO | Panel Táctico Financiero — Menos ruido, datos duros y decisiones tácticas.<br>
-        Dólares y riesgo país: datos de DolarApi y ArgentinaDatos. El resto del contenido es simulado a fines demostrativos. No constituye asesoramiento financiero.
+        Dólares y riesgo país: DolarApi y ArgentinaDatos. Precios: Yahoo Finance (pueden tener demora). Novedades, audios y comunidad: contenido de ejemplo. No constituye asesoramiento financiero.
     </div>
     """,
     unsafe_allow_html=True,
