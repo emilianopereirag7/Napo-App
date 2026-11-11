@@ -12,6 +12,7 @@ import hmac
 import html
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -23,11 +24,17 @@ import yfinance as yf
 # CONFIGURACIÓN GENERAL DE LA PÁGINA
 # =============================================================================
 
+try:
+    _BASE_DIR = Path(__file__).resolve().parent
+except NameError:
+    _BASE_DIR = Path(".")
+_FAVICON = _BASE_DIR / "favicon.png"
+
 st.set_page_config(
     page_title="NAPO | Panel Táctico Financiero",
-    page_icon="🧭",
+    page_icon=str(_FAVICON) if _FAVICON.exists() else "🧭",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",  # La Cocina no debe recibir a los visitantes (sobre todo en celular)
 )
 
 # =============================================================================
@@ -439,6 +446,66 @@ CUSTOM_CSS = f"""
         font-weight: 600;
     }}
 
+    /* ===================== PULIDO VISUAL ===================== */
+    .napo-brand {{ align-items: center; gap: 12px; }}
+    .napo-logo {{ flex: none; filter: drop-shadow(0 4px 14px rgba(37, 99, 235, 0.35)); }}
+    .napo-brand-text {{ display: flex; flex-direction: column; line-height: 1.1; }}
+    .napo-brand-sub {{ margin-top: 4px; }}
+
+    .napo-card-value {{
+        font-size: clamp(19px, 2.1vw, 25px);
+        font-variant-numeric: tabular-nums;
+    }}
+    .napo-ticker-inner {{ font-variant-numeric: tabular-nums; }}
+
+    /* Grilla de tarjetas: 5 en una fila en escritorio, 2 por fila en celular */
+    .napo-kpi-grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 12px;
+    }}
+
+    .napo-kpi-grid .napo-card {{ height: auto; }}
+
+    /* Estado "sin datos" prolijo */
+    .napo-empty {{
+        border: 1px dashed {BORDER_SUBTLE};
+        border-radius: 14px;
+        background: rgba(17, 24, 39, 0.6);
+        padding: 26px 18px;
+        text-align: center;
+        margin: 8px 0;
+    }}
+    .napo-empty-icon {{ font-size: 26px; margin-bottom: 6px; }}
+    .napo-empty-title {{ font-weight: 700; color: {TEXT_PRIMARY}; font-size: 15px; }}
+    .napo-empty-text {{ color: {TEXT_SECONDARY}; font-size: 13px; margin-top: 4px; }}
+
+    div[data-testid="stSpinner"] p {{ color: {TEXT_SECONDARY} !important; }}
+
+    /* ===================== CELULAR ===================== */
+    @media (max-width: 768px) {{
+        .block-container {{ padding-left: 0.9rem; padding-right: 0.9rem; padding-top: 0.6rem; }}
+        .napo-pill {{ display: none; }}
+        .napo-brand-mark {{ font-size: 26px; }}
+        .napo-brand-sub {{ font-size: 10.5px; letter-spacing: 1.2px; }}
+        .napo-header {{ padding-bottom: 12px; }}
+        .napo-card {{ padding: 12px 14px; }}
+        .napo-section-title {{ margin-top: 16px; }}
+        .napo-ticker-wrap {{ padding: 8px 12px; }}
+        .napo-ticker-inner {{ font-size: 12px; animation-duration: 22s; }}
+        .stTabs [data-baseweb="tab-list"] {{ overflow-x: auto; flex-wrap: nowrap; }}
+        .stTabs [data-baseweb="tab"] {{ white-space: nowrap; padding: 0 12px; font-size: 12.5px; }}
+        .napo-cassette {{ padding: 14px; }}
+        .napo-reel {{ width: 36px; height: 36px; }}
+        .napo-demo-banner {{ font-size: 11.5px; padding: 8px 10px; }}
+    }}
+
+    /* Accesibilidad: menos movimiento si el dispositivo lo pide */
+    @media (prefers-reduced-motion: reduce) {{
+        .napo-reel {{ animation: none; }}
+        .napo-ticker-inner {{ animation-duration: 90s; }}
+    }}
+
     /* Scrollbar prolija */
     ::-webkit-scrollbar {{ width: 8px; height: 8px; }}
     ::-webkit-scrollbar-track {{ background: {BG_DARK}; }}
@@ -670,17 +737,37 @@ def grafico_heatmap(df: pd.DataFrame):
     return fig
 
 
-def kpi_card(label: str, value: str, delta: str = None, positive: bool = True, sub: str = None):
+def _kpi_html(label: str, value: str, delta: str = None, positive: bool = True, sub: str = None) -> str:
     extra = ""
     if delta:
         color = YOSHI_GREEN if positive else YOSHI_ORANGE
         arrow = "▲" if positive else "▼"
-        extra += f'<div class="napo-card-delta" style="color:{color};">{arrow} {delta}</div>'
+        extra += f'<div class="napo-card-delta" style="color:{color};">{arrow} {html.escape(delta)}</div>'
     if sub:
         extra += f'<div class="napo-card-sub">{html.escape(sub)}</div>'
+    return (
+        f'<div class="napo-card"><div class="napo-card-label">{html.escape(label)}</div>'
+        f'<div class="napo-card-value">{html.escape(value)}</div>{extra}</div>'
+    )
+
+
+def kpi_card(label: str, value: str, delta: str = None, positive: bool = True, sub: str = None):
+    st.markdown(_kpi_html(label, value, delta, positive, sub), unsafe_allow_html=True)
+
+
+def kpi_grid(items: list):
+    """Fila de tarjetas que se acomoda sola: varias por fila en escritorio, 2 por fila en celular.
+    items: lista de dicts con las claves label, value y opcionalmente delta, positive, sub."""
+    celdas = "".join(_kpi_html(**item) for item in items)
+    st.markdown(f'<div class="napo-kpi-grid">{celdas}</div>', unsafe_allow_html=True)
+
+
+def estado_vacio(titulo: str, detalle: str, icono: str = "📡"):
+    """Cartel prolijo para cuando una fuente de datos no responde."""
     st.markdown(
-        f'<div class="napo-card"><div class="napo-card-label">{label}</div>'
-        f'<div class="napo-card-value">{value}</div>{extra}</div>',
+        f'<div class="napo-empty"><div class="napo-empty-icon">{icono}</div>'
+        f'<div class="napo-empty-title">{html.escape(titulo)}</div>'
+        f'<div class="napo-empty-text">{html.escape(detalle)}</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -798,16 +885,15 @@ st.markdown(
 # HEADER
 # =============================================================================
 
+LOGO_SVG = (
+    '<svg class="napo-logo" width="42" height="42" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="NAPO"><rect width="48" height="48" rx="12" fill="#2563EB"/><path d="M24 8 L32 24 L16 24 Z" fill="#FFFFFF"/><path d="M24 40 L32 24 L16 24 Z" fill="#FFFFFF" fill-opacity="0.38"/><circle cx="24" cy="24" r="2.6" fill="#2563EB"/></svg>'
+)
+
 st.markdown(
-    f"""
-    <div class="napo-header">
-        <div class="napo-brand">
-            <span class="napo-brand-mark">NAPO</span>
-            <span class="napo-brand-sub">Panel Táctico Financiero</span>
-        </div>
-        <div class="napo-pill">🧭 Menos ruido, más decisión</div>
-    </div>
-    """,
+    f'<div class="napo-header"><div class="napo-brand">{LOGO_SVG}'
+    '<div class="napo-brand-text"><span class="napo-brand-mark">NAPO</span>'
+    '<span class="napo-brand-sub">Panel Táctico Financiero</span></div></div>'
+    '<div class="napo-pill">Menos ruido, más decisión</div></div>',
     unsafe_allow_html=True,
 )
 
@@ -825,23 +911,23 @@ st.markdown(
 section_title("Panel Cambiario", "💵")
 
 if dolares is None and riesgo_pais is None:
-    st.warning("No pudimos traer las cotizaciones en este momento. Probá recargar la página en unos minutos.")
+    estado_vacio("Cotizaciones no disponibles", "No pudimos traer las cotizaciones en este momento. Probá recargar la página en unos minutos.", "💵")
 
-cols_cambio = st.columns(5)
-for col, (etiqueta, casa) in zip(cols_cambio[:4], DOLARES_PANEL):
-    with col:
-        cot = (dolares or {}).get(casa)
-        if cot and cot.get("venta") is not None:
-            sub = f"Compra {fmt_pesos(cot['compra'])}" if cot.get("compra") is not None else None
-            kpi_card(etiqueta, fmt_pesos(cot["venta"]), sub=sub)
-        else:
-            kpi_card(etiqueta, "—", sub="Sin datos por ahora")
-with cols_cambio[4]:
-    if riesgo_pais:
-        kpi_card("Riesgo País", f"{int(round(riesgo_pais['valor']))} pb",
-                 sub=f"Dato del {fmt_fecha_corta(riesgo_pais['fecha'])}")
+items_cambio = []
+for etiqueta, casa in DOLARES_PANEL:
+    cot = (dolares or {}).get(casa)
+    if cot and cot.get("venta") is not None:
+        sub = f"Compra {fmt_pesos(cot['compra'])}" if cot.get("compra") is not None else None
+        items_cambio.append(dict(label=etiqueta, value=fmt_pesos(cot["venta"]), sub=sub))
     else:
-        kpi_card("Riesgo País", "—", sub="Sin datos por ahora")
+        items_cambio.append(dict(label=etiqueta, value="—", sub="Sin datos por ahora"))
+if riesgo_pais:
+    items_cambio.append(dict(label="Riesgo País", value=f"{int(round(riesgo_pais['valor']))} pb",
+                             sub=f"Dato del {fmt_fecha_corta(riesgo_pais['fecha'])}"))
+else:
+    items_cambio.append(dict(label="Riesgo País", value="—", sub="Sin datos por ahora"))
+if not (dolares is None and riesgo_pais is None):
+    kpi_grid(items_cambio)
 
 horas = [parse_iso(c.get("fechaActualizacion")) for c in (dolares or {}).values()]
 horas = [h for h in horas if h is not None]
@@ -942,19 +1028,17 @@ with tab1:
             )
 
         if resumen is None:
-            st.info("No pudimos traer los precios de este activo ahora. Probá recargar en unos minutos.")
+            estado_vacio("Sin precios por ahora", "No pudimos traer los precios de este activo. Probá recargar en unos minutos.", "📉")
         else:
-            m1, m2, m3, m4 = st.columns(4)
-            with m1:
-                kpi_card("Último precio (ARS)", fmt_pesos(resumen["ultimo"]))
-            with m2:
-                kpi_card("Variación diaria", fmt_pct(resumen["var"]),
-                         delta="vs. cierre anterior", positive=resumen["var"] >= 0)
-            with m3:
-                kpi_card("Volumen", fmt_numero(resumen["volumen"], 0), sub="último día operado")
-            with m4:
-                kpi_card("Rango 1 año", f"{fmt_numero(resumen['min_1a'], 0)}–{fmt_numero(resumen['max_1a'], 0)}",
-                         sub="mín–máx de cierres")
+            kpi_grid([
+                dict(label="Último precio (ARS)", value=fmt_pesos(resumen["ultimo"])),
+                dict(label="Variación diaria", value=fmt_pct(resumen["var"]),
+                     delta="vs. cierre anterior", positive=resumen["var"] >= 0),
+                dict(label="Volumen", value=fmt_numero(resumen["volumen"], 0), sub="último día operado"),
+                dict(label="Rango 1 año",
+                     value=f"{fmt_numero(resumen['min_1a'], 0)}–{fmt_numero(resumen['max_1a'], 0)}",
+                     sub="mín–máx de cierres"),
+            ])
 
             st.markdown("<br>", unsafe_allow_html=True)
             ctrl1, ctrl2 = st.columns([1, 1])
@@ -1022,7 +1106,7 @@ with tab2:
     df_rend = pd.DataFrame(filas)
 
     if df_rend.empty:
-        st.info("No pudimos traer los precios del mercado ahora. Probá recargar en unos minutos.")
+        estado_vacio("Mercado sin datos por ahora", "No pudimos traer los precios del mercado. Probá recargar en unos minutos.", "📉")
     else:
         df_rend = df_rend.sort_values("Variación (%)", ascending=False).reset_index(drop=True)
 
