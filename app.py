@@ -13,7 +13,7 @@ La lógica está repartida en la carpeta napo/:
   graficos.py    gráficos Plotly
   componentes.py piezas de interfaz (tarjetas, marquesina, encabezado)
   paginas.py     panel cambiario y solapas
-  cocina.py      back-office con clave (publicar reportes)
+  cocina.py      back-office con clave (se abre con ?cocina=1)
   estilos.css    estilos globales
 """
 
@@ -21,7 +21,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from napo.cocina import panel_operador, render_cocina
+from napo.cocina import acceso_cocina, panel_operador
 from napo.componentes import banner_demo, encabezado, marquesina, pie_de_pagina
 from napo.datos import cargar_precios, obtener_dolares, obtener_riesgo_pais
 from napo.estilos import cargar_estilos
@@ -41,7 +41,7 @@ st.set_page_config(
     page_title="NAPO | Panel Táctico Financiero",
     page_icon=str(_FAVICON) if _FAVICON.exists() else "🧭",
     layout="wide",
-    initial_sidebar_state="collapsed",  # La Cocina no debe recibir a los visitantes (sobre todo en celular)
+    initial_sidebar_state="collapsed",
 )
 
 cargar_estilos()
@@ -57,7 +57,7 @@ marquesina(dolares, riesgo_pais, precios)
 encabezado()
 banner_demo()
 panel_cambiario(dolares, riesgo_pais)
-render_cocina()
+acceso_cocina()
 panel_operador()
 
 url_feedback = secreto("FEEDBACK_URL")
