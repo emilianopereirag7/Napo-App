@@ -1,6 +1,6 @@
 """La Cocina: back-office del operador.
 
-- La barra lateral pide una clave (Secret COCINA_CLAVE).
+- Se entra agregando ?cocina=1 a la dirección de la app y escribiendo la clave (Secret COCINA_CLAVE).
 - Con la clave, en la página principal aparece el panel para publicar reportes:
   pegás la respuesta del prompt maestro, se completan los campos, revisás y publicás.
 """
@@ -109,34 +109,32 @@ def _cb_eliminar(reporte_id: int):
 
 # ---------------------------------------------------------------- pantallas
 
-def render_cocina():
-    """Barra lateral: acceso con clave y estado del sistema."""
-    with st.sidebar:
-        st.markdown('<div class="napo-kitchen-title">🔧 La Cocina</div>', unsafe_allow_html=True)
-        st.caption("Back-office interno · uso exclusivo del operador")
-        st.divider()
+def _pidio_cocina() -> bool:
+    """True si la dirección de la app termina en ?cocina=1."""
+    try:
+        return bool(st.query_params.get("cocina"))
+    except Exception:
+        return False
 
-        if not st.session_state.get("cocina_ok", False):
-            st.markdown("**Acceso restringido**")
+
+def acceso_cocina():
+    """Formulario de clave del operador.
+
+    Solo aparece si la dirección termina en ?cocina=1 y todavía no hay sesión abierta,
+    así los visitantes no ven nada de esto.
+    """
+    if st.session_state.get("cocina_ok", False) or not _pidio_cocina():
+        return
+    with st.expander("🔧 Acceso de operador", expanded=True):
+        with st.form("cocina_form"):
             clave = st.text_input("Clave de acceso", type="password", key="cocina_clave")
-            if st.button("Entrar", key="cocina_entrar"):
-                if clave_correcta(clave):
-                    st.session_state["cocina_ok"] = True
-                    st.rerun()
-                else:
-                    st.error("Clave incorrecta o no configurada.")
-        else:
-            st.markdown("**Sesión de operador activa**")
-            st.caption("El formulario para publicar reportes está en la página principal, arriba.")
-            st.divider()
-            st.markdown("**Estado del sistema**")
-            st.caption("Base de datos: " + ("conectada ✅" if reportes_configurados() else "sin configurar ⚠️"))
-            st.caption(f"Última sincronización: {datetime.now().strftime('%d/%m/%Y %H:%M')} hs")
-            st.caption("Fuentes: DolarApi, ArgentinaDatos y Yahoo Finance")
-
-            if st.button("Cerrar sesión de La Cocina"):
-                st.session_state["cocina_ok"] = False
+            entrar = st.form_submit_button("Entrar")
+        if entrar:
+            if clave_correcta(clave):
+                st.session_state["cocina_ok"] = True
                 st.rerun()
+            else:
+                st.error("Clave incorrecta, o falta cargar COCINA_CLAVE en los Secrets.")
 
 
 def panel_operador():
@@ -192,3 +190,10 @@ def panel_operador():
                               help="Eliminar este reporte")
         else:
             st.caption("Todavía no hay reportes publicados.")
+
+        st.divider()
+        st.caption("Base de datos: " + ("conectada ✅" if reportes_configurados() else "sin configurar ⚠️")
+                   + f" · Hora del servidor: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+        if st.button("Cerrar sesión de La Cocina", key="cocina_salir"):
+            st.session_state["cocina_ok"] = False
+            st.rerun()
