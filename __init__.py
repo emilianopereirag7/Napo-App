@@ -1,1 +1,0 @@
-"""NAPO | Panel Táctico Financiero."""
