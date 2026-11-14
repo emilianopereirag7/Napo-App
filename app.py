@@ -9,7 +9,11 @@ La lógica está repartida en la carpeta napo/:
   secretos.py    lectura segura de los Secrets
   formatos.py    formato argentino de números y fechas
   datos.py       DolarApi, ArgentinaDatos y Yahoo Finance
-  reportes.py    reportes (Supabase), lectura del prompt maestro y voz
+  basedatos.py   acceso a Supabase
+  reportes.py    reportes, lectura del prompt maestro y voz
+  shorts.py      noticias en Shorts de YouTube
+  cartera.py     cálculos de «Mi cartera»
+  eventos.py     medición de uso anónima
   graficos.py    gráficos Plotly
   componentes.py piezas de interfaz (tarjetas, marquesina, encabezado)
   paginas.py     panel cambiario y solapas
@@ -25,11 +29,14 @@ from napo.cocina import acceso_cocina, panel_operador
 from napo.componentes import banner_demo, encabezado, marquesina, pie_de_pagina
 from napo.datos import cargar_precios, obtener_dolares, obtener_riesgo_pais
 from napo.estilos import cargar_estilos
+from napo.eventos import registrar_visita
 from napo.paginas import (
-    panel_cambiario, tab_academia, tab_explorador, tab_feedback, tab_ranking, tab_reportes,
+    panel_cambiario, tab_academia, tab_cartera, tab_explorador, tab_feedback, tab_noticias, tab_ranking,
+    tab_reportes,
 )
 from napo.reportes import listar_reportes
 from napo.secretos import secreto
+from napo.shorts import listar_shorts
 
 try:
     _BASE_DIR = Path(__file__).resolve().parent
@@ -45,12 +52,14 @@ st.set_page_config(
 )
 
 cargar_estilos()
+registrar_visita()
 
 # Datos (cada fuente se guarda unos minutos para no saturar las APIs)
 dolares = obtener_dolares()
 riesgo_pais = obtener_riesgo_pais()
 precios = cargar_precios()
 reportes = listar_reportes()
+shorts = listar_shorts()
 
 # Página
 marquesina(dolares, riesgo_pais, precios)
@@ -61,7 +70,10 @@ acceso_cocina()
 panel_operador()
 
 url_feedback = secreto("FEEDBACK_URL")
-nombres_solapas = ["📡 Explorador de Activos", "🔥 Ranking & Heatmap", "📰 Reportes & Audio", "🎓 Academia NAPO"]
+nombres_solapas = [
+    "📡 Explorador", "🔥 Ranking & Heatmap", "💼 Mi cartera", "📰 Reportes & Audio", "🎬 Noticias en Shorts",
+    "🎓 Academia NAPO",
+]
 if url_feedback:
     nombres_solapas.append("💬 Tu opinión")
 solapas = st.tabs(nombres_solapas)
@@ -71,11 +83,15 @@ with solapas[0]:
 with solapas[1]:
     tab_ranking(precios)
 with solapas[2]:
-    tab_reportes(reportes)
+    tab_cartera(precios, reportes)
 with solapas[3]:
+    tab_reportes(reportes)
+with solapas[4]:
+    tab_noticias(shorts)
+with solapas[5]:
     tab_academia()
 if url_feedback:
-    with solapas[4]:
+    with solapas[6]:
         tab_feedback(url_feedback)
 
 pie_de_pagina()
