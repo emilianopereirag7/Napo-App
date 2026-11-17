@@ -93,6 +93,7 @@ def tab_explorador(precios, reportes):
     with col_search:
         ticker_sel = st.selectbox(
             "Buscar activo", opciones, key=f"exp_ticker_{tipo_sel}",  # un selector por filtro: no saltan entre sí
+            index=opciones.index("YPF") if "YPF" in opciones else 0,
             format_func=lambda t: f"{t} · {ACTIVOS[t]['nombre']}",
         )
     if st.session_state.get("_ult_tipo") != tipo_sel:  # cambió el filtro: el activo mostrado cambia solo, no cuenta
@@ -180,6 +181,7 @@ def tab_ranking(precios):
                 "Variación (%)": round(r["var"], 2),
                 "Volumen": int(r["volumen"]),
                 "Amplitud (%)": round(r["amplitud"], 2),
+                "Monto (M $)": round(r["volumen"] * r["ultimo"] / 1e6),
             })
     df_rend = pd.DataFrame(filas)
 
@@ -195,7 +197,7 @@ def tab_ranking(precios):
     st.caption("Variación diaria vs. cierre anterior · Celdas del mismo tamaño (no representan capitalización) · "
                "Fuente: Yahoo Finance, con posible demora.")
 
-    rank_col1, rank_col2, rank_col3 = st.columns(3)
+    rank_col1, rank_col2, rank_col3, rank_col4 = st.columns(4)
 
     with rank_col1:
         section_title("Top Ganadores", "🟢")
@@ -220,6 +222,16 @@ def tab_ranking(precios):
             )
 
     with rank_col3:
+        section_title("Más Operados del Día", "💰")
+        for _, row in df_rend.sort_values("Monto (M $)", ascending=False).head(5).iterrows():
+            st.markdown(
+                f'<div class="napo-card" style="margin-bottom:8px;">'
+                f'<b>{row["Ticker"]}</b> '
+                f'<span class="napo-badge-neutral">$ {fmt_numero(row["Monto (M $)"], 0)} M</span></div>',
+                unsafe_allow_html=True,
+            )
+
+    with rank_col4:
         section_title("Mayor Amplitud del Día", "⚡")
         for _, row in df_rend.sort_values("Amplitud (%)", ascending=False).head(5).iterrows():
             st.markdown(
@@ -231,7 +243,7 @@ def tab_ranking(precios):
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("**Tabla completa**")
-    st.dataframe(df_rend[["Ticker", "Activo", "Último", "Variación (%)", "Volumen"]].set_index("Ticker"))
+    st.dataframe(df_rend[["Ticker", "Activo", "Último", "Variación (%)", "Volumen", "Monto (M $)"]].set_index("Ticker"))
 
 
 def _con_signo(valor: float) -> str:

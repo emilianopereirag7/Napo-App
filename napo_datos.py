@@ -33,21 +33,32 @@ def obtener_riesgo_pais():
         return None
 
 
+TAMANO_LOTE = 40  # símbolos por descarga: si Yahoo rechaza un lote, los demás igual se cargan
+
+
 @st.cache_data(ttl=600, show_spinner="Trayendo precios del mercado…")
 def _descargar_precios():
-    """Un mes de cotizaciones diarias de todos los símbolos (alcanza para variación, ranking y cartera)."""
-    datos = yf.download(
-        SIMBOLOS_TODOS,
-        period="1mo",
-        interval="1d",
-        group_by="ticker",
-        auto_adjust=True,
-        progress=False,
-        threads=True,
-    )
-    if datos is None or datos.empty:
+    """Un mes de cotizaciones diarias de todos los símbolos, en lotes (alcanza para variación, ranking y cartera)."""
+    partes = []
+    for i in range(0, len(SIMBOLOS_TODOS), TAMANO_LOTE):
+        lote = SIMBOLOS_TODOS[i:i + TAMANO_LOTE]
+        try:
+            datos = yf.download(
+                lote,
+                period="1mo",
+                interval="1d",
+                group_by="ticker",
+                auto_adjust=True,
+                progress=False,
+                threads=True,
+            )
+        except Exception:
+            continue  # ese lote falló: seguimos con los demás
+        if datos is not None and not datos.empty:
+            partes.append(datos)
+    if not partes:
         raise ValueError("Yahoo Finance no devolvió datos")
-    return datos
+    return pd.concat(partes, axis=1) if len(partes) > 1 else partes[0]
 
 
 def cargar_precios():
