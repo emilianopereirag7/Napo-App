@@ -4,10 +4,13 @@ import html
 
 import streamlit as st
 
-from napo_config import DOLARES_PANEL, INDICES_MARQUESINA, YOSHI_GREEN, YOSHI_ORANGE
+from napo_config import (
+    BG_CARD, BORDER_SUBTLE, DOLARES_PANEL, INDICES_MARQUESINA, KLEIN_BLUE_LIGHT, TEXT_PRIMARY, TEXT_SECONDARY,
+    YOSHI_GREEN, YOSHI_ORANGE,
+)
 from napo_contenido import TEXTO_BANNER, TEXTO_PIE
 from napo_datos import resumen_serie, serie_activo
-from napo_formatos import fmt_numero, fmt_pct, fmt_pesos, parse_iso
+from napo_formatos import fmt_numero, fmt_pct, fmt_pesos, fmt_var, parse_iso
 from napo_reportes import IMPACTOS
 from napo_shorts import extraer_video_id, url_miniatura, url_short
 
@@ -86,26 +89,32 @@ def reporte_html(rep: dict) -> str:
     return "".join(partes)
 
 
-def shorts_html(shorts) -> str:
-    """Grilla de tarjetas con miniatura vertical. Cada tarjeta abre el Short en YouTube."""
-    tarjetas = []
-    for s in shorts:
-        video_id = extraer_video_id(str(s.get("video_id", "")))
-        if not video_id:
-            continue
-        fecha = parse_iso(s.get("creado"))
-        detalle = html.escape(str(s.get("canal", "")))
-        if fecha:
-            detalle += f" · {fecha.strftime('%d/%m')}"
-        nota = f'<div class="napo-short-nota">{html.escape(str(s["nota"]))}</div>' if s.get("nota") else ""
-        tarjetas.append(
-            f'<a class="napo-short" href="{url_short(video_id)}" target="_blank" rel="noopener noreferrer">'
-            f'<div class="napo-short-thumb"><img src="{url_miniatura(video_id)}" alt="" loading="lazy">'
-            f'<span class="napo-short-play">▶</span></div>'
-            f'<div class="napo-short-titulo">{html.escape(str(s.get("titulo", "")))}</div>'
-            f'<div class="napo-short-canal">{detalle}</div>{nota}</a>'
-        )
-    return '<div class="napo-shorts-grid">' + "".join(tarjetas) + "</div>"
+def _tarjeta_short(s: dict) -> str:
+    video_id = extraer_video_id(str(s.get("video_id", "")))
+    if not video_id:
+        return ""
+    fecha = parse_iso(s.get("creado"))
+    detalle = html.escape(str(s.get("canal", "")))
+    if fecha:
+        detalle += f" · {fecha.strftime('%d/%m')}"
+    nota = f'<div class="napo-short-nota">{html.escape(str(s["nota"]))}</div>' if s.get("nota") else ""
+    return (
+        f'<a class="napo-short" href="{url_short(video_id)}" target="_blank" rel="noopener noreferrer">'
+        f'<div class="napo-short-thumb"><img src="{url_miniatura(video_id)}" alt="" loading="lazy">'
+        f'<span class="napo-short-play">▶</span></div>'
+        f'<div class="napo-short-titulo">{html.escape(str(s.get("titulo", "")))}</div>'
+        f'<div class="napo-short-canal">{detalle}</div>{nota}</a>'
+    )
+
+
+def shorts_html(shorts, clase: str = "napo-shorts-grid") -> str:
+    """Tarjetas con miniatura vertical (grilla o carrusel). Cada tarjeta abre el Short en YouTube."""
+    return f'<div class="{clase}">' + "".join(_tarjeta_short(s) for s in shorts) + "</div>"
+
+
+def carrusel_shorts_html(shorts) -> str:
+    """Los Shorts en una fila que se desliza con el dedo."""
+    return shorts_html(shorts, "napo-shorts-row")
 
 
 def boton_link_html(texto: str, url: str) -> str:
@@ -201,3 +210,97 @@ def pie_de_pagina():
         """,
         unsafe_allow_html=True,
     )
+
+
+# ================================================================ piezas del estilo "app financiera"
+
+_PALETA_AVATAR = ["#2563EB", "#7C3AED", "#0891B2", "#DB2777", "#059669", "#D97706", "#4F46E5", "#DC2626"]
+
+
+def avatar_html(ticker: str, tam: int = 40) -> str:
+    """Círculo de color con las iniciales del activo."""
+    color = _PALETA_AVATAR[sum(map(ord, ticker)) % len(_PALETA_AVATAR)]
+    return (f'<div class="napo-av" style="background:{color};width:{tam}px;height:{tam}px;font-size:{round(tam * 0.3)}px">'
+            f'{html.escape(ticker[:3])}</div>')
+
+
+def pill_html(var) -> str:
+    """Variación en pastilla: verde ▲ si sube, naranja ▼ si baja."""
+    clase = "napo-badge-up" if var >= 0 else "napo-badge-down"
+    return f'<span class="{clase}">{"▲" if var >= 0 else "▼"} {fmt_pct(var)}</span>'
+
+
+def _hay(valor) -> bool:
+    return valor is not None and valor == valor  # descarta None y NaN
+
+
+def fila_activo_html(ticker: str, nombre: str, detalle: str, derecha: str, var=None) -> str:
+    pastilla = pill_html(var) if _hay(var) else ""
+    return (
+        f'<div class="napo-fila" data-t="{html.escape(ticker)}">{avatar_html(ticker)}'
+        f'<div class="napo-fila-t"><b>{html.escape(nombre)}</b><span>{html.escape(detalle)}</span></div>'
+        f'<div class="napo-fila-d"><b>{html.escape(derecha)}</b>{pastilla}</div></div>'
+    )
+
+
+def lista_activos_html(filas: list) -> str:
+    """Lista de activos en una tarjeta. filas: dicts con ticker, nombre, detalle, derecha y var (opcional)."""
+    return '<div class="napo-lista">' + "".join(fila_activo_html(**f) for f in filas) + "</div>"
+
+
+def movers_html(items: list) -> str:
+    """Fila que se desliza con los activos que más se mueven. items: (ticker, nombre, variación)."""
+    tarjetas = "".join(
+        f'<div class="napo-mv" data-t="{html.escape(t)}">{avatar_html(t, 34)}<b>{html.escape(t)}</b>'
+        f'<span>{html.escape(n)}</span>{pill_html(v)}</div>'
+        for t, n, v in items
+    )
+    return f'<div class="napo-movers">{tarjetas}</div>'
+
+
+def titulo_app(texto: str) -> str:
+    return f'<div class="napo-sec">{html.escape(texto)}</div>'
+
+
+def saludo_html() -> str:
+    return '<div class="napo-saludo"><small>Hola 👋</small><h3>Tu resumen de hoy</h3></div>'
+
+
+def saldo_html(tot=None) -> str:
+    """Tarjeta grande de saldo. Sin cartera cargada, invita a armarla."""
+    if not tot or not tot.get("n_activos"):
+        return ('<div class="napo-saldo"><small>Tu cartera hoy</small>'
+                '<div class="napo-saldo-vacio">Armá tu cartera</div>'
+                '<div class="napo-saldo-sub">Cargá tus activos y mirá cuánto valen hoy. '
+                'No se guarda en nuestros servidores.</div></div>')
+    cuerpo, _, centavos = fmt_pesos(tot["valor_total"]).rpartition(",")
+    sub = ""
+    if _hay(tot.get("var_dia_pct")):
+        signo = "+" if tot["var_dia"] >= 0 else "-"
+        flecha = "▲" if tot["var_dia"] >= 0 else "▼"
+        sub = f'<div class="napo-saldo-sub">{flecha} {signo}{fmt_pesos(abs(tot["var_dia"]))} ({fmt_var(tot["var_dia_pct"])}) hoy</div>'
+    return (f'<div class="napo-saldo"><small>Tu cartera hoy</small>'
+            f'<div class="napo-saldo-n">{html.escape(cuerpo)}<span>,{html.escape(centavos)}</span></div>{sub}</div>')
+
+
+def acciones_rapidas_html() -> str:
+    """Documento para un iframe: cuatro botones redondos que cambian de solapa de la página.
+
+    Es un atajo opcional: si el navegador no permite tocar las solapas desde el iframe, no pasa nada.
+    """
+    accesos = [("📊", "Mercado", "Ranking"), ("💼", "Mi cartera", "Mi cartera"), ("📰", "Reportes", "Reportes"),
+               ("🎬", "Noticias", "Noticias")]
+    botones = "".join(
+        f'<button onclick="ir(\'{buscar}\')" aria-label="Ir a {etiqueta}"><i>{icono}</i>{etiqueta}</button>'
+        for icono, etiqueta, buscar in accesos
+    )
+    return f"""<!doctype html><html><head><meta charset="utf-8"><style>
+body{{margin:0;font-family:Inter,-apple-system,Segoe UI,Roboto,sans-serif;background:transparent}}
+.f{{display:flex;justify-content:space-around;padding:6px 4px}}
+button{{background:none;border:0;cursor:pointer;width:78px;text-align:center;color:{TEXT_SECONDARY};font-size:12px;font-weight:700;font-family:inherit}}
+i{{display:flex;width:56px;height:56px;border-radius:50%;background:{BG_CARD};border:1px solid {BORDER_SUBTLE};align-items:center;justify-content:center;font-style:normal;font-size:22px;margin:0 auto 8px}}
+button:hover i{{border-color:{KLEIN_BLUE_LIGHT}}}button:hover{{color:{TEXT_PRIMARY}}}
+</style></head><body><div class="f">{botones}</div><script>
+function ir(texto){{try{{var t=window.parent.document.querySelectorAll('button[data-baseweb="tab"]');
+for(var i=0;i<t.length;i++){{if(t[i].textContent.indexOf(texto)!==-1){{t[i].click();break;}}}}}}catch(e){{}}}}
+</script></body></html>"""

@@ -2,10 +2,12 @@
 
 import pandas as pd
 import streamlit as st
+from streamlit import components
 
 from napo_cartera import a_csv, cartera_vacia, composicion, desde_csv, limpiar_cartera, valuar
 from napo_componentes import (
-    boton_link_html, cassette, estado_vacio, kpi_grid, reporte_html, section_title, shorts_html,
+    acciones_rapidas_html, boton_link_html, carrusel_shorts_html, cassette, estado_vacio, kpi_grid, lista_activos_html,
+    movers_html, reporte_html, saldo_html, saludo_html, section_title, shorts_html, titulo_app,
 )
 from napo_config import ACTIVOS, DOLARES_PANEL, KLEIN_BLUE, RANGOS
 from napo_contenido import DISCLAIMER_CARTERA, DISCLAIMER_REPORTES, GLOSARIO, LINKS_OFICIALES
@@ -163,11 +165,8 @@ def tab_explorador(precios, reportes):
             st.caption("Todavía no hay reportes de este activo.")
 
 
-def tab_ranking(precios):
-    """Solapa 2: heatmap y rankings del día."""
-    section_title("Heatmap de Rendimiento Diario", "🔥")
-    tipo_sel = st.radio("Mostrar", FILTROS_TIPO, horizontal=True, key="rank_tipo")
-
+def _filas_mercado(precios, tipo_sel: str = "Todos") -> pd.DataFrame:
+    """Una fila por activo con precio, variación, volumen, amplitud y monto operado del último día."""
     filas = []
     for tk, datos_tk in ACTIVOS.items():
         if not _coincide_tipo(datos_tk["tipo"], tipo_sel):
@@ -177,14 +176,31 @@ def tab_ranking(precios):
             filas.append({
                 "Ticker": tk,
                 "Activo": datos_tk["nombre"],
+                "Tipo": datos_tk["tipo"],
                 "Último": round(r["ultimo"], 2),
                 "Variación (%)": round(r["var"], 2),
                 "Volumen": int(r["volumen"]),
                 "Amplitud (%)": round(r["amplitud"], 2),
                 "Monto (M $)": round(r["volumen"] * r["ultimo"] / 1e6),
             })
-    df_rend = pd.DataFrame(filas)
+    return pd.DataFrame(filas)
 
+
+def _lista_ranking(df: pd.DataFrame, columna: str, ascendente: bool, derecha, con_variacion: bool = True) -> str:
+    top = df.sort_values(columna, ascending=ascendente).head(5)
+    return lista_activos_html([
+        dict(ticker=r["Ticker"], nombre=r["Activo"], detalle=f"{r['Ticker']} · {r['Tipo']}", derecha=derecha(r),
+             var=r["Variación (%)"] if con_variacion else None)
+        for _, r in top.iterrows()
+    ])
+
+
+def tab_ranking(precios):
+    """Solapa 2: heatmap y rankings del día."""
+    section_title("Heatmap de Rendimiento Diario", "🔥")
+    tipo_sel = st.radio("Mostrar", FILTROS_TIPO, horizontal=True, key="rank_tipo")
+
+    df_rend = _filas_mercado(precios, tipo_sel)
     if df_rend.empty:
         estado_vacio("Mercado sin datos por ahora", "No pudimos traer los precios del mercado. Probá recargar en unos minutos.", "📉")
         return
@@ -197,49 +213,23 @@ def tab_ranking(precios):
     st.caption("Variación diaria vs. cierre anterior · Celdas del mismo tamaño (no representan capitalización) · "
                "Fuente: Yahoo Finance, con posible demora.")
 
-    rank_col1, rank_col2, rank_col3, rank_col4 = st.columns(4)
-
-    with rank_col1:
+    precio = lambda r: fmt_pesos(r["Último"])
+    col1, col2 = st.columns(2)
+    with col1:
         section_title("Top Ganadores", "🟢")
-        for _, row in df_rend.head(5).iterrows():
-            clase = "napo-badge-up" if row["Variación (%)"] >= 0 else "napo-badge-down"
-            st.markdown(
-                f'<div class="napo-card" style="margin-bottom:8px;">'
-                f'<b>{row["Ticker"]}</b> '
-                f'<span class="{clase}">{fmt_var(row["Variación (%)"])}</span></div>',
-                unsafe_allow_html=True,
-            )
-
-    with rank_col2:
+        st.markdown(_lista_ranking(df_rend, "Variación (%)", False, precio), unsafe_allow_html=True)
+    with col2:
         section_title("Top Perdedores", "🔴")
-        for _, row in df_rend.sort_values("Variación (%)").head(5).iterrows():
-            clase = "napo-badge-up" if row["Variación (%)"] >= 0 else "napo-badge-down"
-            st.markdown(
-                f'<div class="napo-card" style="margin-bottom:8px;">'
-                f'<b>{row["Ticker"]}</b> '
-                f'<span class="{clase}">{fmt_var(row["Variación (%)"])}</span></div>',
-                unsafe_allow_html=True,
-            )
-
-    with rank_col3:
+        st.markdown(_lista_ranking(df_rend, "Variación (%)", True, precio), unsafe_allow_html=True)
+    col3, col4 = st.columns(2)
+    with col3:
         section_title("Más Operados del Día", "💰")
-        for _, row in df_rend.sort_values("Monto (M $)", ascending=False).head(5).iterrows():
-            st.markdown(
-                f'<div class="napo-card" style="margin-bottom:8px;">'
-                f'<b>{row["Ticker"]}</b> '
-                f'<span class="napo-badge-neutral">$ {fmt_numero(row["Monto (M $)"], 0)} M</span></div>',
-                unsafe_allow_html=True,
-            )
-
-    with rank_col4:
+        st.markdown(_lista_ranking(df_rend, "Monto (M $)", False, lambda r: f"$ {fmt_numero(r['Monto (M $)'], 0)} M"),
+                    unsafe_allow_html=True)
+    with col4:
         section_title("Mayor Amplitud del Día", "⚡")
-        for _, row in df_rend.sort_values("Amplitud (%)", ascending=False).head(5).iterrows():
-            st.markdown(
-                f'<div class="napo-card" style="margin-bottom:8px;">'
-                f'<b>{row["Ticker"]}</b> '
-                f'<span class="napo-badge-neutral">rango {fmt_pct(row["Amplitud (%)"])}</span></div>',
-                unsafe_allow_html=True,
-            )
+        st.markdown(_lista_ranking(df_rend, "Amplitud (%)", False, lambda r: f"rango {fmt_pct(r['Amplitud (%)'])}",
+                                   con_variacion=False), unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("**Tabla completa**")
@@ -254,6 +244,50 @@ def _vaciar_cartera():
     ss = st.session_state
     ss["cartera_base"] = cartera_vacia()
     ss["cartera_v"] = ss.get("cartera_v", 0) + 1
+
+
+def valuar_con_precios(df: pd.DataFrame, precios):
+    """Valúa una cartera con el último precio del mercado. Devuelve (tabla_valuada, totales)."""
+    mercado = {}
+    for t in df["ticker"]:
+        r = resumen_serie(serie_activo(precios, ACTIVOS[t]["yahoo"]))
+        if r:
+            mercado[t] = {"ultimo": r["ultimo"], "previo": r["previo"]}
+    return valuar(df, mercado, ACTIVOS)
+
+
+def _cb_agregar_activo(prefijo: str):
+    """Suma un activo a la cartera. Corre como callback: la cartera queda actualizada antes de dibujar la página."""
+    ss = st.session_state
+    ss.setdefault("cartera_base", cartera_vacia())
+    ss.setdefault("cartera_v", 0)
+    ticker = ss.get(f"{prefijo}_nuevo_ticker")
+    cantidad = float(ss.get(f"{prefijo}_nueva_cantidad") or 0)
+    precio = float(ss.get(f"{prefijo}_nuevo_precio") or 0)
+    if ticker not in ACTIVOS or cantidad <= 0:
+        ss["_toast"] = "⚠️ Ingresá una cantidad mayor a 0."
+        return
+    fila = pd.DataFrame([{"ticker": ticker, "cantidad": cantidad, "precio_compra": precio if precio > 0 else float("nan")}])
+    combinada, _ = limpiar_cartera(pd.concat([ss["cartera_base"], fila], ignore_index=True), list(ACTIVOS))
+    ss["cartera_base"] = combinada
+    ss["cartera_v"] += 1
+    ss["_toast"] = f"✅ Agregamos {ticker} a tu cartera."
+
+
+def _form_agregar(prefijo: str):
+    """Formulario para sumar un activo (se usa en el Inicio y en Mi cartera)."""
+    validos = list(ACTIVOS.keys())
+    with st.form(f"{prefijo}_form", clear_on_submit=True):
+        col_a, col_b, col_c = st.columns([3, 1, 2])
+        with col_a:
+            st.selectbox("Activo", validos, key=f"{prefijo}_nuevo_ticker",
+                         format_func=lambda t: f"{t} · {ACTIVOS[t]['nombre']}")
+        with col_b:
+            st.number_input("Cantidad", min_value=0.0, value=0.0, step=1.0, key=f"{prefijo}_nueva_cantidad")
+        with col_c:
+            st.number_input("Precio de compra (opcional)", min_value=0.0, value=0.0, step=1.0,
+                            key=f"{prefijo}_nuevo_precio")
+        st.form_submit_button("➕ Agregar a mi cartera", on_click=_cb_agregar_activo, args=(prefijo,))
 
 
 def tab_cartera(precios, reportes):
@@ -280,26 +314,7 @@ def tab_cartera(precios, reportes):
     for aviso in ss.pop("cartera_avisos", []):
         st.warning(aviso)
 
-    with st.form("cartera_form", clear_on_submit=True):
-        col_a, col_b, col_c = st.columns([3, 1, 2])
-        with col_a:
-            nuevo_ticker = st.selectbox("Activo", validos, key="cartera_nuevo_ticker",
-                                        format_func=lambda t: f"{t} · {ACTIVOS[t]['nombre']}")
-        with col_b:
-            nueva_cantidad = st.number_input("Cantidad", min_value=0.0, value=0.0, step=1.0, key="cartera_nueva_cantidad")
-        with col_c:
-            nuevo_precio = st.number_input("Precio de compra (opcional)", min_value=0.0, value=0.0, step=1.0,
-                                           key="cartera_nuevo_precio")
-        agregar = st.form_submit_button("➕ Agregar a mi cartera")
-    if agregar:
-        if nueva_cantidad > 0:
-            fila = pd.DataFrame([{"ticker": nuevo_ticker, "cantidad": nueva_cantidad,
-                                  "precio_compra": nuevo_precio if nuevo_precio > 0 else float("nan")}])
-            combinada, _ = limpiar_cartera(pd.concat([ss["cartera_base"], fila], ignore_index=True), validos)
-            ss["cartera_base"] = combinada
-            ss["cartera_v"] += 1
-        else:
-            st.warning("Ingresá una cantidad mayor a 0.")
+    _form_agregar("cartera")
 
     base = ss["cartera_base"]
     if len(base):
@@ -322,12 +337,7 @@ def tab_cartera(precios, reportes):
         st.caption(DISCLAIMER_CARTERA)
         return
 
-    mercado = {}
-    for t in vigente["ticker"]:
-        r = resumen_serie(serie_activo(precios, ACTIVOS[t]["yahoo"]))
-        if r:
-            mercado[t] = {"ultimo": r["ultimo"], "previo": r["previo"]}
-    valuada, tot = valuar(vigente, mercado, ACTIVOS)
+    valuada, tot = valuar_con_precios(vigente, precios)
     registrar_una_vez("cartera", "", "_cartera_evento")
 
     items = [dict(label="Valor de la cartera", value=fmt_pesos(tot["valor_total"]), sub=f"{tot['n_activos']} activo(s)")]
@@ -448,3 +458,60 @@ def tab_feedback(url: str):
         f'qué te falta. Lleva dos minutos y nos ayuda a decidir qué construir.</div>{boton}</div>',
         unsafe_allow_html=True,
     )
+
+
+def tab_inicio(precios, reportes, shorts, dolares, riesgo_pais):
+    """Solapa 1: pantalla de inicio estilo app. En computadora va en una columna centrada; en celular, a todo el ancho."""
+    _, centro, _ = st.columns([1, 2.4, 1])
+    with centro:
+        _contenido_inicio(precios, reportes, shorts, dolares, riesgo_pais)
+
+
+def _contenido_inicio(precios, reportes, shorts, dolares, riesgo_pais):
+    """Saldo, atajos, dólar, movimientos, reporte del día, tus activos y noticias."""
+    ss = st.session_state
+    vigente = ss.get("cartera")
+    valuada, tot = None, None
+    if vigente is not None and len(vigente):
+        valuada, tot = valuar_con_precios(vigente, precios)
+
+    st.markdown(saludo_html(), unsafe_allow_html=True)
+    st.markdown(saldo_html(tot), unsafe_allow_html=True)
+    with st.popover("➕ Agregar activo a mi cartera"):
+        _form_agregar("inicio")
+    components.v1.html(acciones_rapidas_html(), height=112)
+    panel_cambiario(dolares, riesgo_pais)
+
+    mercado = _filas_mercado(precios)
+    if not mercado.empty:
+        liquidos = mercado.sort_values("Monto (M $)", ascending=False).head(25)  # lo más operado...
+        movers = liquidos.reindex(liquidos["Variación (%)"].abs().sort_values(ascending=False, kind="mergesort").index).head(5)  # ...que más se mueve
+        st.markdown(titulo_app("Lo que más se mueve hoy"), unsafe_allow_html=True)
+        st.markdown(movers_html([(r["Ticker"], r["Activo"], r["Variación (%)"]) for _, r in movers.iterrows()]),
+                    unsafe_allow_html=True)
+
+    if reportes:
+        st.markdown(titulo_app("Reporte del día"), unsafe_allow_html=True)
+        render_reportes(reportes[:1], "inicio")
+
+    if valuada is not None:
+        st.markdown(titulo_app("Tus activos"), unsafe_allow_html=True)
+        filas = []
+        for _, r in valuada.head(5).iterrows():
+            entero = float(r["cantidad"]).is_integer()
+            filas.append(dict(
+                ticker=r["ticker"], nombre=r["nombre"] or r["ticker"],
+                detalle=f"{fmt_numero(r['cantidad'], 0 if entero else 2)} × " + (fmt_pesos(r["precio"]) if pd.notna(r["precio"]) else "—"),
+                derecha=fmt_pesos(r["valor"]) if pd.notna(r["valor"]) else "—", var=r["var_dia_pct"],
+            ))
+        st.markdown(lista_activos_html(filas), unsafe_allow_html=True)
+    elif not mercado.empty:
+        st.markdown(titulo_app("Lo más operado del día"), unsafe_allow_html=True)
+        st.markdown(_lista_ranking(mercado, "Monto (M $)", False, lambda r: fmt_pesos(r["Último"])), unsafe_allow_html=True)
+    else:
+        estado_vacio("Mercado sin datos por ahora", "No pudimos traer los precios del mercado. Probá recargar en unos minutos.", "📉")
+
+    if shorts:
+        st.markdown(titulo_app("Noticias en 1 minuto"), unsafe_allow_html=True)
+        st.markdown(carrusel_shorts_html(shorts[:5]), unsafe_allow_html=True)
+    st.caption(DISCLAIMER_CARTERA)

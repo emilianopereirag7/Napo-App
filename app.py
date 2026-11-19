@@ -31,8 +31,7 @@ from napo_datos import cargar_precios, obtener_dolares, obtener_riesgo_pais
 from napo_estilos import cargar_estilos
 from napo_eventos import registrar_visita
 from napo_paginas import (
-    panel_cambiario, tab_academia, tab_cartera, tab_explorador, tab_feedback, tab_noticias, tab_ranking,
-    tab_reportes,
+    tab_academia, tab_cartera, tab_explorador, tab_feedback, tab_inicio, tab_noticias, tab_ranking, tab_reportes,
 )
 from napo_reportes import listar_reportes
 from napo_secretos import secreto
@@ -51,8 +50,11 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-cargar_estilos()
+cargar_estilos(nav_inferior=secreto("NAV_INFERIOR", "1") != "0")
 registrar_visita()
+aviso = st.session_state.pop("_toast", None)  # mensajes breves de los botones (por ejemplo, "Agregamos YPF")
+if aviso:
+    st.toast(aviso)
 
 # Datos (cada fuente se guarda unos minutos para no saturar las APIs)
 dolares = obtener_dolares()
@@ -65,33 +67,35 @@ shorts = listar_shorts()
 marquesina(dolares, riesgo_pais, precios)
 encabezado()
 banner_demo()
-panel_cambiario(dolares, riesgo_pais)
 acceso_cocina()
 panel_operador()
 
 url_feedback = secreto("FEEDBACK_URL")
 nombres_solapas = [
-    "📡 Explorador", "🔥 Ranking & Heatmap", "💼 Mi cartera", "📰 Reportes & Audio", "🎬 Noticias en Shorts",
-    "🎓 Academia NAPO",
+    "🏠 Inicio", "📡 Explorador", "🔥 Ranking & Heatmap", "💼 Mi cartera", "📰 Reportes & Audio",
+    "🎬 Noticias en Shorts", "🎓 Academia NAPO",
 ]
 if url_feedback:
     nombres_solapas.append("💬 Tu opinión")
 solapas = st.tabs(nombres_solapas)
 
-with solapas[0]:
-    tab_explorador(precios, reportes)
-with solapas[1]:
-    tab_ranking(precios)
-with solapas[2]:
-    tab_cartera(precios, reportes)
+# «Mi cartera» se dibuja primero (aunque esté más a la derecha) para que el Inicio ya vea la cartera al día.
 with solapas[3]:
-    tab_reportes(reportes)
+    tab_cartera(precios, reportes)
+with solapas[0]:
+    tab_inicio(precios, reportes, shorts, dolares, riesgo_pais)
+with solapas[1]:
+    tab_explorador(precios, reportes)
+with solapas[2]:
+    tab_ranking(precios)
 with solapas[4]:
-    tab_noticias(shorts)
+    tab_reportes(reportes)
 with solapas[5]:
+    tab_noticias(shorts)
+with solapas[6]:
     tab_academia()
 if url_feedback:
-    with solapas[6]:
+    with solapas[7]:
         tab_feedback(url_feedback)
 
 pie_de_pagina()
