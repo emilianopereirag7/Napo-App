@@ -4,17 +4,17 @@ import pandas as pd
 import streamlit as st
 from streamlit import components
 
-from napo_cartera import a_csv, cartera_vacia, composicion, desde_csv, limpiar_cartera, valuar
+from napo_seguimiento import a_csv, desde_csv, limpiar_lista, lista_vacia, resumir_activos
 from napo_componentes import (
     acciones_rapidas_html, boton_link_html, carrusel_shorts_html, cassette, estado_vacio, kpi_grid, lista_activos_html,
-    movers_html, reporte_html, saldo_html, saludo_html, section_title, shorts_html, titulo_app,
+    movers_html, reporte_html, saludo_html, section_title, shorts_html, titulo_app,
 )
 from napo_config import ACTIVOS, DOLARES_PANEL, KLEIN_BLUE, RANGOS
 from napo_contenido import DISCLAIMER_CARTERA, DISCLAIMER_REPORTES, GLOSARIO, LINKS_OFICIALES
 from napo_datos import cargar_historial, recortar_rango, resumen_serie, serie_activo
 from napo_eventos import registrar, registrar_cambio, registrar_una_vez
 from napo_formatos import fmt_fecha_corta, fmt_numero, fmt_pct, fmt_pesos, fmt_var, parse_iso
-from napo_graficos import grafico_composicion, grafico_heatmap, grafico_precio
+from napo_graficos import grafico_heatmap, grafico_precio
 from napo_reportes import obtener_audio, reportes_configurados
 from napo_shorts import url_video
 
@@ -236,165 +236,181 @@ def tab_ranking(precios):
     st.dataframe(df_rend[["Ticker", "Activo", "Último", "Variación (%)", "Volumen", "Monto (M $)"]].set_index("Ticker"))
 
 
-def _con_signo(valor: float) -> str:
-    return ("+" if valor >= 0 else "-") + fmt_pesos(abs(valor))
-
-
-def _vaciar_cartera():
+def _vaciar_seguimiento():
     ss = st.session_state
-    ss["cartera_base"] = cartera_vacia()
-    ss["cartera_v"] = ss.get("cartera_v", 0) + 1
+    ss["seguimiento_base"] = lista_vacia()
+    ss["seguimiento_v"] = ss.get("seguimiento_v", 0) + 1
+    ss["activos_seguidos"] = []
 
 
-def valuar_con_precios(df: pd.DataFrame, precios):
-    """Valúa una cartera con el último precio del mercado. Devuelve (tabla_valuada, totales)."""
-    mercado = {}
-    for t in df["ticker"]:
-        r = resumen_serie(serie_activo(precios, ACTIVOS[t]["yahoo"]))
-        if r:
-            mercado[t] = {"ultimo": r["ultimo"], "previo": r["previo"]}
-    return valuar(df, mercado, ACTIVOS)
+def _inicializar_seguimiento():
+    """Inicializa la lista y migra automáticamente el estado antiguo de Mi cartera."""
+    ss = st.session_state
+    if "seguimiento_base" not in ss:
+        legado = ss.get("cartera_base", ss.get("cartera"))
+        migrada, avisos = limpiar_lista(legado, list(ACTIVOS))
+        ss["seguimiento_base"] = migrada
+        if avisos:
+            ss["seguimiento_avisos"] = avisos
+    ss.setdefault("seguimiento_v", 0)
+    ss.setdefault("activos_seguidos", ss["seguimiento_base"]["ticker"].tolist())
 
 
 def _cb_agregar_activo(prefijo: str):
-    """Suma un activo a la cartera. Corre como callback: la cartera queda actualizada antes de dibujar la página."""
+    """Agrega un ticker a la lista de seguimiento, sin cantidades ni costos."""
     ss = st.session_state
-    ss.setdefault("cartera_base", cartera_vacia())
-    ss.setdefault("cartera_v", 0)
+    _inicializar_seguimiento()
     ticker = ss.get(f"{prefijo}_nuevo_ticker")
-    cantidad = float(ss.get(f"{prefijo}_nueva_cantidad") or 0)
-    precio = float(ss.get(f"{prefijo}_nuevo_precio") or 0)
-    if ticker not in ACTIVOS or cantidad <= 0:
-        ss["_toast"] = "⚠️ Ingresá una cantidad mayor a 0."
+    actuales = ss["seguimiento_base"]["ticker"].tolist()
+    if ticker not in ACTIVOS:
+        ss["_toast"] = "⚠️ Elegí un activo válido."
         return
-    fila = pd.DataFrame([{"ticker": ticker, "cantidad": cantidad, "precio_compra": precio if precio > 0 else float("nan")}])
-    combinada, avisos = limpiar_cartera(pd.concat([ss["cartera_base"], fila], ignore_index=True), list(ACTIVOS))
-    ss["cartera_base"] = combinada
-    ss["cartera_avisos"] = avisos
-    ss["cartera_v"] += 1
-    ss["_toast"] = f"✅ Agregamos {ticker} a tu cartera."
+    if ticker in actuales:
+        ss["_toast"] = f"ℹ️ Ya estás siguiendo {ticker}."
+        return
+    nueva = pd.DataFrame([{ "ticker": ticker }])
+    combinada, _ = limpiar_lista(pd.concat([ss["seguimiento_base"], nueva], ignore_index=True), list(ACTIVOS))
+    ss["seguimiento_base"] = combinada
+    ss["seguimiento_v"] += 1
+    ss["activos_seguidos"] = combinada["ticker"].tolist()
+    ss["_toast"] = f"✅ Agregamos {ticker} a tus activos."
 
 
 def _form_agregar(prefijo: str):
-    """Formulario para sumar un activo (se usa en el Inicio y en Mi cartera)."""
+    """Formulario sencillo para seguir un activo desde Inicio o Mis activos."""
     validos = list(ACTIVOS.keys())
     with st.form(f"{prefijo}_form", clear_on_submit=True):
-        col_a, col_b, col_c = st.columns([3, 1, 2])
-        with col_a:
-            st.selectbox("Activo", validos, key=f"{prefijo}_nuevo_ticker",
-                         format_func=lambda t: f"{t} · {ACTIVOS[t]['nombre']}")
-        with col_b:
-            st.number_input("Cantidad", min_value=0.0, value=0.0, step=1.0, key=f"{prefijo}_nueva_cantidad")
-        with col_c:
-            st.number_input("Precio de compra (opcional)", min_value=0.0, value=0.0, step=1.0,
-                            key=f"{prefijo}_nuevo_precio")
-        st.form_submit_button("➕ Agregar a mi cartera", on_click=_cb_agregar_activo, args=(prefijo,))
+        ticker = st.selectbox(
+            "Activo para seguir", validos, key=f"{prefijo}_nuevo_ticker",
+            format_func=lambda t: f"{t} · {ACTIVOS[t]['nombre']} ({ACTIVOS[t]['tipo']})",
+        )
+        st.form_submit_button("➕ Seguir activo", on_click=_cb_agregar_activo, args=(prefijo,))
 
 
-def tab_cartera(precios, reportes):
-    """Solapa 3: «Mi cartera». No se guarda en ningún servidor (se descarga y se vuelve a cargar)."""
-    section_title("Mi cartera", "💼")
-    st.caption("Tu cartera NO se guarda en nuestros servidores: dura mientras tengas esta página abierta. "
-               "Descargala en CSV para volver a cargarla cuando quieras.")
+def _tabla_seguimiento(filas):
+    """Tabla informativa: cotizaciones locales y variaciones, sin datos patrimoniales."""
+    def ars(valor):
+        return fmt_pesos(valor) if valor is not None else "—"
+
+    def usd(valor):
+        return f"US$ {fmt_numero(valor, 2)}" if valor is not None else "—"
+
+    def variacion(valor):
+        return fmt_var(valor) if valor is not None else "—"
+
+    registros = []
+    for fila in filas:
+        fecha = fila["fecha"].strftime("%d/%m/%Y") if fila["fecha"] is not None else "Sin datos"
+        registros.append({
+            "Activo": f"{fila['ticker']} · {fila['nombre']}",
+            "Tipo": fila["tipo"],
+            "Precio ARS": ars(fila["precio_ars"]),
+            "USD CCL est.": usd(fila["precio_usd_ccl"]),
+            "Día ARS": variacion(fila["var_dia"]),
+            "Semana ARS": variacion(fila["var_semana"]),
+            "Mes ARS": variacion(fila["var_mes"]),
+            "Datos al": fecha,
+        })
+    return pd.DataFrame(registros)
+
+
+def tab_seguimiento(precios, reportes, dolares=None):
+    """Solapa de seguimiento informativo: activos, cotizaciones y noticias."""
+    section_title("Mis activos", "📌")
+    st.caption(
+        "Seguí las empresas, acciones, CEDEARs y ETF que te interesan. "
+        "No necesitás informar cuántas unidades tenés ni cuánto pagaste."
+    )
     ss = st.session_state
-    ss.setdefault("cartera_base", cartera_vacia())
-    ss.setdefault("cartera_v", 0)
+    _inicializar_seguimiento()
     validos = list(ACTIVOS.keys())
 
-    archivo = st.file_uploader("Cargar una cartera guardada (CSV)", type=["csv"], key="cartera_archivo")
-    if archivo is not None:
-        firma = (archivo.name, archivo.size)
-        if ss.get("cartera_firma") != firma:
-            ss["cartera_firma"] = firma
-            tabla, avisos = desde_csv(archivo.getvalue(), validos)
-            ss["cartera_base"] = tabla
-            ss["cartera_v"] += 1
-            ss["cartera_avisos"] = avisos
-    else:
-        ss["cartera_firma"] = None
-    for aviso in ss.pop("cartera_avisos", []):
+    with st.expander("Importar una lista guardada (CSV)", expanded=False):
+        archivo = st.file_uploader("Archivo CSV", type=["csv"], key="seguimiento_archivo")
+        if archivo is not None:
+            firma = (archivo.name, archivo.size)
+            if ss.get("seguimiento_firma") != firma:
+                ss["seguimiento_firma"] = firma
+                tabla, avisos = desde_csv(archivo.getvalue(), validos)
+                ss["seguimiento_base"] = tabla
+                ss["seguimiento_v"] += 1
+                ss["seguimiento_avisos"] = avisos
+                ss["activos_seguidos"] = tabla["ticker"].tolist()
+        else:
+            ss["seguimiento_firma"] = None
+
+    for aviso in ss.pop("seguimiento_avisos", []):
         st.warning(aviso)
 
-    _form_agregar("cartera")
+    with st.container(border=True):
+        _form_agregar("seguimiento")
 
-    base = ss["cartera_base"]
+    base = ss["seguimiento_base"]
     if len(base):
-        st.markdown("**Mis activos** · podés corregir los números o borrar filas")
+        st.markdown("**Activos que seguís** · podés cambiar símbolos o quitar filas")
         editada = st.data_editor(
-            base, num_rows="dynamic", hide_index=True, key=f"cartera_editor_{ss['cartera_v']}",
+            base, num_rows="dynamic", hide_index=True,
+            key=f"seguimiento_editor_{ss['seguimiento_v']}",
             column_config={
-                "ticker": st.column_config.SelectboxColumn("Activo", options=validos, required=True),
-                "cantidad": st.column_config.NumberColumn("Cantidad", min_value=0.0, format="%.2f"),
-                "precio_compra": st.column_config.NumberColumn("Precio de compra", min_value=0.0, format="%.2f"),
+                "ticker": st.column_config.SelectboxColumn(
+                    "Activo", options=validos, required=True,
+                    help="La lista sirve para personalizar noticias y resúmenes; no representa posiciones ni cantidades.",
+                ),
             },
+            disabled=[],
         )
     else:
         editada = base
-    vigente, avisos_limpieza = limpiar_cartera(editada, validos)
-    for aviso in avisos_limpieza:
+
+    vigente, avisos = limpiar_lista(editada, validos)
+    for aviso in avisos:
         st.warning(aviso)
-    ss["cartera"] = vigente  # lo que se valúa y se descarga (sin pisar la base del editor)
+    ss["seguimiento_base"] = vigente.copy()
+    ss["activos_seguidos"] = vigente["ticker"].tolist()
 
     if vigente.empty:
-        estado_vacio("Tu cartera está vacía", "Agregá tu primer activo con el formulario de arriba o cargá un CSV.", "💼")
+        estado_vacio(
+            "Todavía no seguís activos",
+            "Agregá empresas, acciones o CEDEARs para consultar sus cotizaciones y encontrar noticias relevantes.",
+            "📌",
+        )
         st.caption(DISCLAIMER_CARTERA)
         return
 
-    valuada, tot = valuar_con_precios(vigente, precios)
-    registrar_una_vez("cartera", "", "_cartera_evento")
-
-    items = [dict(label="Valor de la cartera", value=fmt_pesos(tot["valor_total"]), sub=f"{tot['n_activos']} activo(s)")]
-    if pd.notna(tot["var_dia_pct"]):
-        items.append(dict(label="Variación del día", value=_con_signo(tot["var_dia"]),
-                          delta=fmt_pct(tot["var_dia_pct"]), positive=tot["var_dia"] >= 0))
-    if tot["costo_total"]:
-        resultado_incompleto = (
-            valuada["precio_compra"].isna().any() or valuada["precio"].isna().any()
-        )
-        items.append(dict(
-            label="Resultado parcial" if resultado_incompleto else "Resultado total",
-            value=_con_signo(tot["resultado_total"]),
-            delta=fmt_pct(tot["resultado_pct"]),
-            positive=tot["resultado_total"] >= 0,
-            sub=("Excluye posiciones sin costo de compra o sin cotización"
-                 if resultado_incompleto else "Según los costos y cotizaciones disponibles"),
-        ))
-    kpi_grid(items)
-    if tot["n_sin_precio"]:
-        st.caption(f"{tot['n_sin_precio']} activo(s) sin precio disponible por ahora: no suman al total.")
-
-    tabla = pd.DataFrame({
-        "Activo": valuada["ticker"],
-        "Cantidad": [fmt_numero(x, 0 if float(x).is_integer() else 2) for x in valuada["cantidad"]],
-        "Precio": [fmt_pesos(x) if pd.notna(x) else "—" for x in valuada["precio"]],
-        "Valor": [fmt_pesos(x) if pd.notna(x) else "—" for x in valuada["valor"]],
-        "Peso": [fmt_pct(x) if pd.notna(x) else "—" for x in valuada["peso"]],
-        "Var. día": [fmt_var(x) if pd.notna(x) else "—" for x in valuada["var_dia_pct"]],
-        "Resultado": [fmt_var(x) if pd.notna(x) else "—" for x in valuada["resultado_pct"]],
-    })
-    st.dataframe(tabla, hide_index=True)
-
-    comp = composicion(valuada)
-    if not comp.empty:
-        st.markdown("**Composición**")
-        try:
-            st.plotly_chart(grafico_composicion(comp), config={"displayModeBar": False})
-        except Exception:
-            st.dataframe(comp, hide_index=True)
+    registrar_una_vez("cartera", "", "_seguimiento_evento")
+    filas = resumir_activos(vigente["ticker"].tolist(), precios, ACTIVOS, dolares)
+    tabla = _tabla_seguimiento(filas)
+    st.markdown("**Mercado de tus activos**")
+    st.dataframe(tabla, hide_index=True, use_container_width=True)
+    st.caption(
+        "Precios locales en ARS: Yahoo Finance (último dato diario disponible, puede tener demora). "
+        "USD CCL est. = precio en ARS dividido por el dólar CCL vendedor informado por DolarApi; "
+        "es una equivalencia indicativa, no una cotización independiente. "
+        "Las variaciones diaria, semanal y mensual corresponden al precio local en ARS; "
+        "para calcular variaciones históricas en USD CCL necesitaríamos también el histórico del dólar CCL."
+    )
 
     col_desc, col_vaciar, _ = st.columns([2, 1, 2])
     with col_desc:
-        st.download_button("⬇️ Descargar mi cartera (CSV)", data=a_csv(vigente).encode("utf-8-sig"),
-                           file_name="mi_cartera_napo.csv", mime="text/csv", key="cartera_descargar")
+        st.download_button(
+            "⬇️ Descargar mis activos (CSV)", data=a_csv(vigente).encode("utf-8-sig"),
+            file_name="mis_activos_napo.csv", mime="text/csv", key="seguimiento_descargar",
+        )
     with col_vaciar:
-        st.button("Vaciar cartera", key="cartera_vaciar", on_click=_vaciar_cartera)
+        st.button("Vaciar lista", key="seguimiento_vaciar", on_click=_vaciar_seguimiento)
 
     propios = [r for r in (reportes or []) if r.get("ticker") in set(vigente["ticker"])]
     if propios:
-        section_title("Reportes de tus activos", "📰")
-        render_reportes(propios[:3], "cart")
+        section_title("Reportes de los activos que seguís", "📰")
+        render_reportes(propios[:5], "seg")
+    else:
+        st.info("Todavía no hay reportes publicados para los activos que seguís.")
     st.caption(DISCLAIMER_CARTERA)
 
+
+# Compatibilidad interna: permite que una versión anterior de app.py siga importando tab_cartera.
+def tab_cartera(precios, reportes, dolares=None):
+    return tab_seguimiento(precios, reportes, dolares)
 
 def tab_noticias(shorts):
     """Solapa 5: las 5 noticias del momento, en Shorts de YouTube de fuentes confiables."""
@@ -479,16 +495,12 @@ def tab_inicio(precios, reportes, shorts, dolares, riesgo_pais):
 
 
 def _contenido_inicio(precios, reportes, shorts, dolares, riesgo_pais):
-    """Saldo, atajos, dólar, movimientos, reporte del día, tus activos y noticias."""
+    """Resumen, atajos, dólar, movimientos, reporte del día, activos seguidos y noticias."""
     ss = st.session_state
-    vigente = ss.get("cartera")
-    valuada, tot = None, None
-    if vigente is not None and len(vigente):
-        valuada, tot = valuar_con_precios(vigente, precios)
+    tickers_seguidos = ss.get("activos_seguidos", [])
 
     st.markdown(saludo_html(), unsafe_allow_html=True)
-    st.markdown(saldo_html(tot), unsafe_allow_html=True)
-    with st.popover("➕ Agregar activo a mi cartera"):
+    with st.popover("➕ Seguir un activo"):
         _form_agregar("inicio")
     components.v1.html(acciones_rapidas_html(), height=112)
     panel_cambiario(dolares, riesgo_pais)
@@ -505,17 +517,23 @@ def _contenido_inicio(precios, reportes, shorts, dolares, riesgo_pais):
         st.markdown(titulo_app("Reporte del día"), unsafe_allow_html=True)
         render_reportes(reportes[:1], "inicio")
 
-    if valuada is not None:
+    if tickers_seguidos:
         st.markdown(titulo_app("Tus activos"), unsafe_allow_html=True)
-        filas = []
-        for _, r in valuada.head(5).iterrows():
-            entero = float(r["cantidad"]).is_integer()
-            filas.append(dict(
-                ticker=r["ticker"], nombre=r["nombre"] or r["ticker"],
-                detalle=f"{fmt_numero(r['cantidad'], 0 if entero else 2)} × " + (fmt_pesos(r["precio"]) if pd.notna(r["precio"]) else "—"),
-                derecha=fmt_pesos(r["valor"]) if pd.notna(r["valor"]) else "—", var=r["var_dia_pct"],
+        resumen = resumir_activos(tickers_seguidos[:5], precios, ACTIVOS, dolares)
+        filas_activos = []
+        for r in resumen:
+            precio = fmt_pesos(r["precio_ars"]) if r["precio_ars"] is not None else "Sin cotización"
+            equivalencia = (
+                f"USD CCL est. {fmt_numero(r['precio_usd_ccl'], 2)}"
+                if r["precio_usd_ccl"] is not None else "USD CCL no disponible"
+            )
+            filas_activos.append(dict(
+                ticker=r["ticker"], nombre=r["nombre"],
+                detalle=f"{precio} · {equivalencia}",
+                derecha=fmt_var(r["var_dia"]) if r["var_dia"] is not None else "—",
+                var=r["var_dia"],
             ))
-        st.markdown(lista_activos_html(filas), unsafe_allow_html=True)
+        st.markdown(lista_activos_html(filas_activos), unsafe_allow_html=True)
     elif not mercado.empty:
         st.markdown(titulo_app("Lo más operado del día"), unsafe_allow_html=True)
         st.markdown(_lista_ranking(mercado, "Monto (M $)", False, lambda r: fmt_pesos(r["Último"])), unsafe_allow_html=True)

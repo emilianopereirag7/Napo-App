@@ -12,7 +12,7 @@ La lógica está repartida en los archivos napo_*.py (todos en la misma carpeta,
   napo_basedatos.py   acceso a Supabase
   napo_reportes.py    reportes, lectura del prompt maestro y voz
   napo_shorts.py      noticias en Shorts de YouTube
-  napo_cartera.py     cálculos de «Mi cartera»
+  napo_seguimiento.py lista informativa de activos seguidos
   napo_eventos.py     medición de uso anónima
   napo_graficos.py    gráficos Plotly
   napo_componentes.py piezas de interfaz (tarjetas, marquesina, encabezado)
@@ -31,7 +31,7 @@ from napo_datos import cargar_precios, obtener_dolares, obtener_riesgo_pais
 from napo_estilos import cargar_estilos
 from napo_eventos import registrar_visita
 from napo_paginas import (
-    tab_academia, tab_cartera, tab_explorador, tab_feedback, tab_inicio, tab_noticias, tab_ranking, tab_reportes,
+    tab_academia, tab_explorador, tab_feedback, tab_inicio, tab_noticias, tab_ranking, tab_reportes, tab_seguimiento,
 )
 from napo_reportes import listar_reportes
 from napo_secretos import secreto
@@ -72,16 +72,16 @@ panel_operador()
 
 url_feedback = secreto("FEEDBACK_URL")
 nombres_solapas = [
-    "🏠 Inicio", "📡 Explorador", "🔥 Ranking & Heatmap", "💼 Mi cartera", "📰 Reportes & Audio",
+    "🏠 Inicio", "📡 Explorador", "🔥 Ranking & Heatmap", "📌 Mis activos", "📰 Reportes & Audio",
     "🎬 Noticias en Shorts", "🎓 Academia NAPO",
 ]
 if url_feedback:
     nombres_solapas.append("💬 Tu opinión")
 solapas = st.tabs(nombres_solapas)
 
-# «Mi cartera» se dibuja primero (aunque esté más a la derecha) para que el Inicio ya vea la cartera al día.
+# «Mis activos» se dibuja primero para que Inicio pueda mostrar el seguimiento actualizado.
 with solapas[3]:
-    tab_cartera(precios, reportes)
+    tab_seguimiento(precios, reportes, dolares)
 with solapas[0]:
     tab_inicio(precios, reportes, shorts, dolares, riesgo_pais)
 with solapas[1]:

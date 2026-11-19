@@ -344,7 +344,7 @@ def _seccion_uso():
         dict(label="Últimos 7 días", value=str(r["visitas_7d"]), sub="sesiones únicas"),
         dict(label="Últimos 30 días", value=str(r["visitas_30d"]), sub="sesiones únicas"),
         dict(label="Audios escuchados", value=str(r["audios"]), sub="últimos 30 días"),
-        dict(label="Usaron Mi cartera", value=str(r["usaron_cartera"]), sub="sesiones"),
+        dict(label="Usaron Mis activos", value=str(r["usaron_cartera"]), sub="sesiones"),
         dict(label="Shorts reproducidos", value=str(r["shorts"]), sub="en la página"),
     ])
     st.markdown("**Visitas por día (últimos 14 días)**")

@@ -288,7 +288,7 @@ def acciones_rapidas_html() -> str:
 
     Es un atajo opcional: si el navegador no permite tocar las solapas desde el iframe, no pasa nada.
     """
-    accesos = [("📊", "Mercado", "Ranking"), ("💼", "Mi cartera", "Mi cartera"), ("📰", "Reportes", "Reportes"),
+    accesos = [("📊", "Mercado", "Ranking"), ("📌", "Mis activos", "Mis activos"), ("📰", "Reportes", "Reportes"),
                ("🎬", "Noticias", "Noticias")]
     botones = "".join(
         f'<button onclick="ir(\'{buscar}\')" aria-label="Ir a {etiqueta}"><i>{icono}</i>{etiqueta}</button>'
