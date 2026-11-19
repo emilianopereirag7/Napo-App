@@ -29,6 +29,7 @@ from napo_cocina import acceso_cocina, panel_operador
 from napo_componentes import banner_demo, encabezado, marquesina, pie_de_pagina
 from napo_datos import cargar_precios, obtener_dolares, obtener_riesgo_pais
 from napo_estilos import cargar_estilos
+from napo_actualidad import tab_actualidad
 from napo_eventos import registrar_visita
 from napo_paginas import (
     tab_academia, tab_explorador, tab_feedback, tab_inicio, tab_noticias, tab_ranking, tab_reportes, tab_seguimiento,
@@ -72,7 +73,7 @@ panel_operador()
 
 url_feedback = secreto("FEEDBACK_URL")
 nombres_solapas = [
-    "🏠 Inicio", "📡 Explorador", "🔥 Ranking & Heatmap", "📌 Mis activos", "📰 Reportes & Audio",
+    "🏠 Inicio", "🗞️ Actualidad", "📡 Explorador", "🔥 Ranking & Heatmap", "📌 Mis activos", "📰 Reportes & Audio",
     "🎬 Noticias en Shorts", "🎓 Academia NAPO",
 ]
 if url_feedback:
@@ -80,22 +81,24 @@ if url_feedback:
 solapas = st.tabs(nombres_solapas)
 
 # «Mis activos» se dibuja primero para que Inicio pueda mostrar el seguimiento actualizado.
-with solapas[3]:
+with solapas[4]:
     tab_seguimiento(precios, reportes, dolares)
 with solapas[0]:
     tab_inicio(precios, reportes, shorts, dolares, riesgo_pais)
 with solapas[1]:
-    tab_explorador(precios, reportes)
+    tab_actualidad(st.session_state.get("activos_seguidos", []))
 with solapas[2]:
+    tab_explorador(precios, reportes)
+with solapas[3]:
     tab_ranking(precios)
-with solapas[4]:
-    tab_reportes(reportes)
 with solapas[5]:
-    tab_noticias(shorts)
+    tab_reportes(reportes)
 with solapas[6]:
+    tab_noticias(shorts)
+with solapas[7]:
     tab_academia()
 if url_feedback:
-    with solapas[7]:
+    with solapas[8]:
         tab_feedback(url_feedback)
 
 pie_de_pagina()
