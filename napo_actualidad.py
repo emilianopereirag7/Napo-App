@@ -13,6 +13,8 @@ from typing import Any
 
 import streamlit as st
 
+from napo_actualidad_datos import cargar_actualidad_publicada
+
 TZ_ARG = timezone(timedelta(hours=-3))
 
 ESTADOS = {
@@ -224,9 +226,11 @@ def filtrar_eventos(
             continue
         if filtro == "Global" and evento.get("scope") != "global":
             continue
-        if filtro == "Argentina" and "Argentina" not in evento.get("countries", []):
+        paises = {str(x).strip().casefold() for x in evento.get("countries", [])}
+        sectores = {str(x).strip().casefold() for x in evento.get("sectors", [])}
+        if filtro == "Argentina" and not ({"argentina", "ar", "arg"} & paises):
             continue
-        if filtro == "Tecnología" and "Tecnología" not in evento.get("sectors", []):
+        if filtro == "Tecnología" and not ({"tecnología", "tecnologia", "technology", "tecnológico", "tecnologico"} & sectores):
             continue
         if consulta:
             texto = " ".join([
@@ -360,13 +364,23 @@ def _estado_texto(estado: str) -> str:
 def _render_fuentes(evento: dict):
     fuentes = evento.get("sources", [])
     if not fuentes:
-        st.caption("No hay fuentes registradas.")
+        st.caption("No hay fuentes registradas para este acontecimiento.")
         return
     for fuente in fuentes:
-        st.markdown(f"**{html.escape(str(fuente.get('type', 'Fuente')))}:** {html.escape(str(fuente.get('name', 'Sin nombre')))}")
+        tipo = html.escape(str(fuente.get("type", "Fuente")))
+        nombre = html.escape(str(fuente.get("name", "Sin nombre")))
+        titulo = html.escape(str(fuente.get("title", "")))
+        st.markdown(f"**{tipo}: {nombre}**")
+        if titulo:
+            st.caption(titulo)
+        dominio = str(fuente.get("domain") or "").strip()
+        if dominio:
+            st.caption(dominio)
         url = fuente.get("url")
         if isinstance(url, str) and url.startswith(("https://", "http://")):
             st.markdown(f"[Consultar publicación original]({url})")
+        if fuente.get("source_status") in {"retirada", "reemplazada"}:
+            st.caption("Esta fuente figura como retirada o reemplazada.")
 
 
 def _render_evento(evento: dict):
@@ -376,11 +390,25 @@ def _render_evento(evento: dict):
             st.markdown(f"#### {html.escape(str(evento.get('title', 'Sin título')))}")
         with col_estado:
             st.markdown(_estado_texto(evento.get("status", "")))
-        actualizaciones = sorted(evento.get("updates", []), key=lambda u: _parse_fecha(u.get("at")), reverse=True)
+
+        actualizaciones = sorted(
+            evento.get("updates", []),
+            key=lambda u: _parse_fecha(u.get("at")),
+            reverse=True,
+        )
+        fecha_creacion = evento.get("created_at")
+        fecha_actualizacion = evento.get("updated_at")
+        vigencia = {
+            "activa": "Activa",
+            "cerrada": "Cerrada",
+            "archivada": "Archivada",
+        }.get(evento.get("validity"), "")
+        importancia = str(evento.get("importance") or "media").capitalize()
         st.caption(
-            f"Última actualización: {_fecha_hora(evento.get('updated_at'))} · "
-            f"Publicado inicialmente: {_fecha_hora(evento.get('created_at'))} · "
-            f"{len(actualizaciones)} actualización(es)"
+            f"Última actualización: {_fecha_hora(fecha_actualizacion)} · "
+            f"Publicado inicialmente: {_fecha_hora(fecha_creacion)} · "
+            f"{len(actualizaciones)} actualización(es) · Importancia: {importancia}"
+            + (f" · Vigencia: {vigencia}" if vigencia else "")
         )
         st.write(evento.get("summary", ""))
 
@@ -392,42 +420,41 @@ def _render_evento(evento: dict):
         st.caption(f"Activos vinculados: {tickers}")
 
         with st.expander(f"Ver evolución del acontecimiento ({len(actualizaciones)} actualizaciones)", expanded=False):
-            for actualizacion in actualizaciones:
+            if not actualizaciones:
+                st.caption("Todavía no hay actualizaciones editoriales publicadas.")
+            for indice, actualizacion in enumerate(actualizaciones):
                 st.markdown(
                     f"**{_fecha_hora(actualizacion.get('at'))} · "
                     f"{html.escape(str(actualizacion.get('title', 'Actualización')))}**"
                 )
                 st.markdown(_estado_texto(actualizacion.get("status", "")))
                 st.write(actualizacion.get("detail", ""))
+                fuentes_update = actualizacion.get("sources", [])
+                if fuentes_update:
+                    st.caption("Fuentes de esta actualización:")
+                    _render_fuentes({"sources": fuentes_update})
                 if actualizacion.get("demo_note"):
                     st.caption(actualizacion["demo_note"])
-                if actualizacion is not actualizaciones[-1]:
+                if indice < len(actualizaciones) - 1:
                     st.divider()
-        with st.expander("Fuentes registradas", expanded=False):
+
+        with st.expander(f"Fuentes del acontecimiento ({len(evento.get('sources', []))})", expanded=False):
             _render_fuentes(evento)
 
 
-def tab_actualidad(tickers_seguidos: list[str] | None = None):
-    """Prototipo visual del flujo de noticias y evolución editorial de NAPO."""
-    st.markdown("## 🗞️ Actualidad financiera")
-    st.caption("Un flujo de acontecimientos: lo último arriba y el historial debajo de cada noticia.")
-    st.warning(
-        "MODO DEMOSTRACIÓN · Las noticias, fuentes, fechas y actualizaciones que ves son ficticias. "
-        "Esta pantalla todavía no consulta proveedores ni publica información real."
-    )
-
-    if "actualidad_demo_eventos" not in st.session_state:
-        st.session_state["actualidad_demo_eventos"] = copy.deepcopy(_demo_eventos())
-    eventos = st.session_state["actualidad_demo_eventos"]
-    tickers = [str(t).upper() for t in (tickers_seguidos or [])]
-
-    _simulador_actualizacion(eventos)
+def _render_feed(eventos: list[dict], tickers: list[str], sufijo: str, es_demo: bool = False):
+    if es_demo:
+        _simulador_actualizacion(eventos)
 
     c_filtro, c_busqueda = st.columns([1.2, 1])
     with c_filtro:
-        filtro = st.selectbox("Filtrar", FILTROS, key="actualidad_filtro")
+        filtro = st.selectbox("Filtrar", FILTROS, key=f"actualidad_filtro_{sufijo}")
     with c_busqueda:
-        busqueda = st.text_input("Buscar en actualidad", placeholder="Empresa, ticker, tema...", key="actualidad_busqueda")
+        busqueda = st.text_input(
+            "Buscar en actualidad",
+            placeholder="Empresa, ticker, tema...",
+            key=f"actualidad_busqueda_{sufijo}",
+        )
 
     filtrados = filtrar_eventos(eventos, filtro, tickers, busqueda)
     total_actualizaciones = sum(len(e.get("updates", [])) for e in filtrados)
@@ -441,14 +468,51 @@ def tab_actualidad(tickers_seguidos: list[str] | None = None):
         st.info("Todavía no seguís activos. Agregalos en la sección «Mis activos» para personalizar este flujo.")
         return
     if not filtrados:
-        st.info("No hay acontecimientos de demostración que coincidan con este filtro.")
+        st.info("No hay acontecimientos publicados que coincidan con este filtro." if not es_demo
+                else "No hay acontecimientos de demostración que coincidan con este filtro.")
         return
-
     for evento in filtrados:
         _render_evento(evento)
 
     st.caption(
-        "Criterio del prototipo: los acontecimientos se ordenan por su última actualización. "
-        "Dentro de cada acontecimiento, la actualización más reciente aparece primero. "
-        "Las relaciones con activos son explícitas; compartir sector no alcanza para vincular una noticia."
+        "Los acontecimientos se ordenan por su última actualización. Dentro de cada historia, "
+        "la novedad más reciente aparece primero. Las relaciones con activos son explícitas."
     )
+
+
+def _mostrar_demo():
+    with st.expander("Ver prototipo con ejemplos ficticios", expanded=False):
+        st.warning(
+            "MODO DEMOSTRACIÓN · Los acontecimientos, fuentes, fechas y actualizaciones son ficticios. "
+            "No representan información del mercado."
+        )
+        if "actualidad_demo_eventos" not in st.session_state:
+            st.session_state["actualidad_demo_eventos"] = copy.deepcopy(_demo_eventos())
+        tickers = [str(t).upper() for t in st.session_state.get("activos_seguidos", [])]
+        _render_feed(st.session_state["actualidad_demo_eventos"], tickers, "demo", es_demo=True)
+
+
+def tab_actualidad(tickers_seguidos: list[str] | None = None):
+    """Actualidad real desde Supabase; los ejemplos quedan disponibles por separado."""
+    st.markdown("## 🗞️ Actualidad financiera")
+    st.caption("Acontecimientos verificados, fuentes identificadas e historial de cambios.")
+
+    tickers = [str(t).upper() for t in (tickers_seguidos or [])]
+    resultado = cargar_actualidad_publicada()
+    if resultado.get("status") == "ok":
+        eventos = resultado.get("events", [])
+        st.success("Base editorial conectada · Noticias publicadas desde Supabase")
+        if eventos:
+            _render_feed(eventos, tickers, "publicado", es_demo=False)
+        else:
+            st.info(
+                "La conexión con Supabase funciona, pero todavía no hay acontecimientos publicados. "
+                "Las noticias en borrador o pendientes de revisión no se muestran en el portal."
+            )
+            st.caption("El siguiente paso será incorporar la carga y publicación editorial desde La Cocina.")
+    else:
+        st.error(resultado.get("message") or "No se pudo conectar con la base editorial de Supabase.")
+        st.caption("La pantalla de Actualidad no va a mostrar ejemplos ficticios como si fueran noticias reales.")
+
+    _mostrar_demo()
+
